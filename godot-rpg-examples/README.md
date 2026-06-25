@@ -44,3 +44,20 @@ Sin `GameManager` global, sin EventBus propio, sin wrapper de `move_and_slide`,
 sin serializar Resources al save, sin A* a mano. Eso lo dan
 `NavigationAgent3D`, las señales, `user://` y los nodos del motor. Añádelo solo
 cuando un segundo caso real lo pida.
+
+
+## Ejemplos profundos por sistema (investigación junio 2026)
+
+Además de los scripts base de arriba, cada uno de los 10 sistemas tiene ejemplos
+más completos en GDScript y C# en su subcarpeta:
+
+- [`01-character-controller-camera/`](./01-character-controller-camera/) — Controlador de personaje + cámara 3ª persona
+- [`02-animation-ik/`](./02-animation-ik/) — Animación / AnimationTree / IK
+- [`03-combat-damage/`](./03-combat-damage/) — Combate y daño
+- [`04-stats-progression/`](./04-stats-progression/) — Stats / niveles / progresión
+- [`05-inventory-equipment/`](./05-inventory-equipment/) — Inventario / items / equipo
+- [`06-dialogue-quests/`](./06-dialogue-quests/) — Diálogo y quests
+- [`07-enemy-ai-navigation/`](./07-enemy-ai-navigation/) — IA enemiga y navegación
+- [`08-save-persistence/`](./08-save-persistence/) — Guardado / persistencia
+- [`09-ui-hud-menus/`](./09-ui-hud-menus/) — UI / HUD / menús
+- [`10-world-architecture/`](./10-world-architecture/) — Gestión de mundo / niveles y arquitectura
