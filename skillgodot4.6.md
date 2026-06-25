@@ -2305,7 +2305,8 @@ Los seis efectos clásicos de un RPG 3D (hit-flash, dissolve de muerte, outline/
 | Reemplazar el look completo (toon, agua) | `ShaderMaterial` en el slot Material | Control total, sin PBR |
 | Mantener PBR y AÑADIR un efecto encima (escudo, dissolve overlay) | `StandardMaterial3D` + `Material.next_pass` = `ShaderMaterial` | No reescribes el PBR |
 | Outline/silueta de selección o hover | `StandardMaterial3D` → sección **Stencil** (modo Outline, nativo 4.5+) | Cero shader propio |
-| Hit-flash en muchos enemigos que comparten material | `instance uniform` + `set_instance_shader_parameter()` | No duplica recurso, va por MeshInstance3D |
+| Hit-flash en muchos enemigos que comparten material (Forward+/Mobile) | `instance uniform` + `set_instance_shader_parameter()` | No duplica recurso, va por MeshInstance3D — **NO en Compatibility/web** |
+| Hit-flash en export **web/Compatibility** | `ShaderMaterial.duplicate()` por enemigo (`resource_local_to_scene = true`) + `set_shader_parameter()` | Compatibility no soporta `instance uniform` ([godot-proposals#6909](https://github.com/godotengine/godot-proposals/issues/6909)) |
 
 Hechos canónicos que evitan la mitad de los atascos:
 - `ShaderMaterial` y `StandardMaterial3D` son hermanos (ambos heredan de `Material`/`BaseMaterial3D`). `Material.next_pass` encadena pasadas; **no todo tiene que ser ShaderMaterial**.
@@ -2317,7 +2318,7 @@ Hechos canónicos que evitan la mitad de los atascos:
 
 ### GDScript (hit-flash multi-enemigo, el patrón base de un RPG)
 
-El efecto #1 de daño y el bug #1 de RPG: si 30 goblins comparten el `.tres` del `ShaderMaterial`, `set_shader_parameter("flash", 1.0)` los hace **parpadear a todos**. La solución correcta y barata es `instance uniform` + `set_instance_shader_parameter` (apunta al MeshInstance3D, no al recurso). Ver bloque de ejemplos al final.
+El efecto #1 de daño y el bug #1 de RPG: si 30 goblins comparten el `.tres` del `ShaderMaterial`, `set_shader_parameter("flash", 1.0)` los hace **parpadear a todos**. En **Forward+/Mobile** la solución correcta y barata es `instance uniform` + `set_instance_shader_parameter` (apunta al MeshInstance3D, no al recurso). **OJO — esto NO compila en Compatibility (= export web):** los `instance uniform` no están soportados ahí ([godot-proposals#6909](https://github.com/godotengine/godot-proposals/issues/6909)), un shader con `instance uniform float flash` falla a compilar y el material no se renderiza. Para web, duplica el `ShaderMaterial` por enemigo (`material.duplicate()` con `resource_local_to_scene = true`) y usa `set_shader_parameter` normal. Ver bloque de ejemplos al final (incluye la rama web).
 
 ### Shader (.gdshader): los seis efectos
 
@@ -2346,6 +2347,7 @@ Verificado: `stencil_mode write, compare_always, 1;` en el material base y `sten
 | `Expected constant expression after '='` | `const float x = 1.0/1024.0;` o `const ... = pow(x,y);` el parser no evalúa esa aritmética | precalcula el literal o usa un `uniform` ([#33840](https://github.com/godotengine/godot/issues/33840), [#81391](https://github.com/godotengine/godot/issues/81391)) |
 | Crash editor `Index is out of bounds` | un `sampler2D` con hint seguido de otro sin hint | pon hints explícitos en todos los samplers contiguos ([#67493](https://github.com/godotengine/godot/issues/67493)) |
 | Toda la horda parpadea al herir a uno | `ShaderMaterial` compartido + `set_shader_parameter` | `instance uniform` + `set_instance_shader_parameter` (o `duplicate()` / `local_to_scene`) |
+| Flash no se ve / shader no compila en export web | `instance uniform` no soportado en Compatibility ([godot-proposals#6909](https://github.com/godotengine/godot-proposals/issues/6909)) | usa material duplicado por enemigo (`resource_local_to_scene`) + `set_shader_parameter` |
 | Instance uniform "contamina" el outline | bug `next_pass`: modificar un instance uniform afecta al del next_pass | no reuses el mismo nombre entre pases ([#83472](https://github.com/godotengine/godot/issues/83472)) |
 | `next_pass` ShaderMaterial sobre StandardMaterial3D solo muestra albedo | bug histórico ([#76537](https://github.com/godotengine/godot/issues/76537)) | invierte el orden (base = ShaderMaterial) o verifica `render_mode`/blend del next_pass |
 | Foam de agua cambia con la cámara | `texture(depth_tex,uv).r` es depth NDC no-lineal, no metros | reconstruye con `INV_PROJECTION_MATRIX` (ver código) |
@@ -2353,7 +2355,7 @@ Verificado: `stencil_mode write, compare_always, 1;` en el material base y `sten
 | Pantalla negra al cambiar resolución | coexisten `hint_depth_texture` + `hint_screen_texture` | no los mezcles en escenas con resize ([#97728](https://github.com/godotengine/godot/issues/97728)) |
 | Líneas rosa gridded con screen texture en web | bug Compatibility ([#79914](https://github.com/godotengine/godot/issues/79914)) | evita screen-space en el build web |
 | Outline desaparece en export web | stencil no soportado en Compatibility | fallback a casco invertido o post-proceso |
-| Sombra no desaparece con la malla disuelta | `discard` no castea sombra como `ALPHA_SCISSOR_THRESHOLD` | usa `ALPHA` + `ALPHA_SCISSOR_THRESHOLD` si necesitas sombras correctas ([#58924](https://github.com/godotengine/godot/issues/58924)) |
+| Sombra inconsistente con la malla disuelta | `discard` ocurre en el pase regular (tratado a menudo como transparente), así que su comportamiento de sombra no es fiable | para sombras opacas correctas usa `ALPHA` + `ALPHA_SCISSOR_THRESHOLD` (mantiene la malla en el pipeline opaco); [#58924](https://github.com/godotengine/godot/issues/58924) documenta el historial de sombras de alpha-scissor (era el scissor el que fallaba, ya corregido) |
 
 ### Cómo no quedarte atascado (pasos de decisión)
 
@@ -2362,7 +2364,7 @@ Verificado: `stencil_mode write, compare_always, 1;` en el material base y `sten
 3. **¿Outline?** Primero prueba `StandardMaterial3D` → Stencil → Outline (nativo). Solo escribe shader si necesitas X-ray.
 4. **¿El efecto se dispara por instancia (flash, dissolve por enemigo)?** → `instance uniform` + `set_instance_shader_parameter`, NUNCA `set_shader_parameter` sobre recurso compartido.
 5. **¿Uso pantalla/profundidad (agua, escudo con intersección, distorsión)?** Asume que se rompe en web (Compatibility). Declara los uniforms con `hint_screen_texture`/`hint_depth_texture`, reconstruye depth lineal, y ten un fallback sin screen-space para el export web.
-6. **¿Web?** Renderer = Compatibility, y **web no tiene C#** → escribe la lógica de disparo en GDScript. Sin stencil, sin agua refractiva fiable.
+6. **¿Web?** Renderer = Compatibility, y **web no tiene C#** → escribe la lógica de disparo en GDScript. Sin stencil, sin agua refractiva fiable, y **sin `instance uniform`** ([godot-proposals#6909](https://github.com/godotengine/godot-proposals/issues/6909)): el hit-flash por instancia (el efecto estrella de esta sección) NO compila en web — usa `ShaderMaterial.duplicate()` por enemigo (`resource_local_to_scene = true`) + `set_shader_parameter`.
 7. **¿Toca compute/GLSL crudo con `SceneData`?** Solo entonces te afecta `mat3x4`. Para `.gdshader` ignóralo.
 
 ### Addon vs construirlo
@@ -2371,7 +2373,7 @@ Verificado: `stencil_mode write, compare_always, 1;` en el material base y `sten
 
 Texto (`.gdshader`) sobre VisualShader para todo: versionable en git, diffeable en PRs, y VisualShader no expone `stencil_mode` ni `light()` custom de forma completa.
 
-**Veredicto ponytail:** el mejor shader es el que no escribes — outline con la sección Stencil nativa de `StandardMaterial3D`, toon con `render_mode diffuse_toon`, ruido con `NoiseTexture2D`. Cuando sí escribas, son 30 líneas: declara tus uniforms con `source_color`/`hint_*`, dispáralos por instancia con `set_instance_shader_parameter` (no revientes la horda entera), y recuerda que `SCREEN_TEXTURE` murió en Godot 3. El `mat3x4` de 4.6 es un susto de compute, no de tus efectos.
+**Veredicto ponytail:** el mejor shader es el que no escribes — outline con la sección Stencil nativa de `StandardMaterial3D`, toon con `render_mode diffuse_toon`, ruido con `NoiseTexture2D`. Cuando sí escribas, son 30 líneas: declara tus uniforms con `source_color`/`hint_*`, dispáralos por instancia con `set_instance_shader_parameter` (no revientes la horda entera — pero en web/Compatibility no hay `instance uniform`: ahí duplica el material por enemigo), y recuerda que `SCREEN_TEXTURE` murió en Godot 3. El `mat3x4` de 4.6 es un susto de compute, no de tus efectos.
 
 ## 12. Importación de assets
 
@@ -2388,7 +2390,7 @@ Todo el pipeline base es **nativo en 4.6**: glTF, `.glb`, `.blend`, FBX (importa
 Decisiones canónicas:
 
 - **Formato: `.glb`** (binario, autocontenido). Reproducible, no necesita Blender en cada máquina ni en CI. Reserva `.blend` directo solo para iteración local en solitario; FBX solo para mocap heredado.
-- **`.blend` directo** llama a Blender por debajo (`EditorSceneFormatImporterBlend`). Requiere **DOS** settings distintos: activar en *Project Settings → Filesystem → Import → Blender → Enabled*, **y** la ruta en *Editor Settings → Filesystem → Import → Blender → Blender 3 Path* (clave `filesystem/import/blender/blender3_path`). La ruta apunta a la **carpeta** que contiene el ejecutable (p.ej. `/usr/bin`), no al binario. Necesitas Blender 3.0+ (en la práctica 3.3+/4.x).
+- **`.blend` directo** llama a Blender por debajo (`EditorSceneFormatImporterBlend`). Requiere **DOS** settings distintos: activar en *Project Settings → Filesystem → Import → Blender → Enabled*, **y** la ruta en *Editor Settings → Filesystem → Import → Blender → Blender Path* (clave `filesystem/import/blender/blender_path`). Desde el PR #85448 (mergeado en 2024, Godot 4.3+) la clave se renombró de `blender3_path` a `blender_path` y la ruta apunta al **ejecutable** de Blender (p.ej. `/usr/bin/blender` en Linux, `C:/Program Files/Blender Foundation/Blender 4.x/blender.exe` en Windows), **no a la carpeta**. Necesitas Blender 3.0+ (recomendado 4.x; versiones <3.3 tienen problemas conocidos de exportación).
 - **Materiales: extráelos a archivos.** Los materiales del `.glb` son **Built-In** por defecto (embebidos, regenerados en cada reimport). Para editarlos persistente: Advanced Import Settings → selecciona el material → *Materials → Storage = Files (.material/.tres)* y/o *Keep On Reimport*. Para variantes en runtime usa `set_surface_override_material()`, no mutes el importado.
 - **Texturas:** *VRAM Compressed* + *Mipmaps ON* para 3D; *Lossless* para UI/pixel-art 2D. **Color espacial:** albedo = sRGB; normal/roughness/metallic/AO = **linear (Non-Color)**. La opción *Normal Map* del importador solo surte efecto con VRAM Compressed.
 - **Animaciones:** una escena base con malla+`Skeleton3D` (*Import As: Scene*); cada set de clips *Import As: Animation Library*, que se añaden a un único `AnimationPlayer` (`add_animation_library("locomotion", lib)`). Retarget Mixamo/mocap → tu rig vía `BoneMap` + `SkeletonProfileHumanoid` (auto-mapping si los huesos llevan nombres ingleses estándar), aplicado en runtime por `RetargetModifier3D`.
@@ -2509,7 +2511,7 @@ public partial class Spawner : Node3D
 ### Notas de editor / Import dock (no es código)
 
 - **Editar material persistente:** doble clic en el `.glb` → *Advanced Import Settings* → material → *Storage = Files* (extrae `.tres`/`.material`) → *Reimport*. Cambiar un campo NO reimporta solo: pulsa **Reimport**.
-- **Colisión:** importar un mesh **no** crea collider (aunque Jolt sea el motor 3D por defecto). En *Advanced Import Settings* → nodo → *Create Collision* (Trimesh estático / Convex dinámico), o sufija objetos en Blender: `-col`, `-colonly`, `-convcol`, `-navmesh`.
+- **Colisión:** importar un mesh **no** crea collider (aunque Jolt sea el motor 3D por defecto). En *Advanced Import Settings* → nodo → *Create Collision* (Trimesh estático / Convex dinámico), o sufija objetos en Blender: `-col`, `-colonly`, `-convcol`, `-navmesh`. **Ojo en glTF/`.glb`:** los sufijos funcionan de forma fiable cuando están en el nombre del **NODO**; el sufijo `-colonly`/`-convcolonly` puesto sobre el nombre de la **MALLA** puede ser ignorado por el importador (issue #115869). Alternativa robusta: usa *Advanced Import Settings → Create Collision* por nodo en vez de depender del sufijo de malla.
 - **Lightmaps:** activa *Generate Lightmap UV2* en el Import dock del mesh; no confíes en el segundo UV de Blender (issue #93884).
 - **VCS `.gitignore`** (oficial de GitHub): ignora `.godot/`, **conserva** los `*.import`.
 
@@ -2522,7 +2524,7 @@ public partial class Spawner : Node3D
 | Modelo **negro** | (1) sin luz/environment — el 80% de los casos; (2) normales invertidas/ausentes; (3) normal map marcado sRGB | Añade `DirectionalLight3D` + `WorldEnvironment`; recalcula normales en Blender; normal map en **linear** |
 | Caras **faltantes**/negras de un lado | normales invertidas / material single-sided | Blender: Normals → Recalculate Outside (Shift+N); o `cull_mode = Disabled` (issues #40329, #84358) |
 | Modelo **gigante/diminuto** o **rotado 90°** | escala/ejes no aplicados (Blender Z-up vs Godot Y-up); FBX/ufbx mete empties ×100 | Blender: **`Ctrl+A → All Transforms`** antes de exportar; usa `.glb` no FBX (issue #90314) |
-| `Blend file import is enabled... but no Blender path is configured` | falta ruta en **Editor** Settings | *Editor Settings → Filesystem → Import → Blender → Blender 3 Path* (la **carpeta**, no el `.exe`) |
+| `Blend file import is enabled... but no Blender path is configured` | falta ruta en **Editor** Settings | *Editor Settings → Filesystem → Import → Blender → Blender Path* (clave `blender_path`); apunta al **ejecutable** (p.ej. `/usr/bin/blender`, `...\blender.exe`), **no a la carpeta** |
 | `.blend` no importa / X en FileSystem / CI cuelga | versión de Blender incompatible o ausente en PATH | versión 3.3+; en CI usa `.glb` exportado; primer pase `godot --headless --import --verbose` (issues #67275, #89767, #111265) |
 | `glTF: Image index '0' couldn't be loaded with the name: Image_0. Skipping it.` | checkout limpio sin `*.import` (reimport con defaults) o `.godot/imported/` stale commiteado | commitea `*.import`, borra `.godot/`, reabre (issues #83200, #42235) |
 | Escena que instancia un modelo **deja de cargar** tras re-export | `.glb` exportado **vacío** (Blender exportó con "Selected Objects" sin selección) | desmarca *Selected Objects*; valida tamaño del `.glb` antes de pisarlo (issues #68994, #82275) |
@@ -2538,8 +2540,8 @@ public partial class Spawner : Node3D
 2. **¿Gigante/diminuto/rotado?** → `Ctrl+A → All Transforms` en Blender, usa `.glb` no FBX.
 3. **¿Material no editable / se revierte?** → Storage = Files + Keep, o escena heredada.
 4. **¿Assets rotos tras `git clone`?** → faltan los `*.import` (o commiteaste `.godot/imported/` stale). Commitea `*.import`, ignora `.godot/`, borra caché, reimporta.
-5. **¿`.blend` no importa?** → ruta de Blender en **Editor** Settings (carpeta) + versión 3.3+; si CI, pásate a `.glb`.
-6. **¿Atraviesa el suelo?** → "Create Collision" en el import o sufijo `-col`.
+5. **¿`.blend` no importa?** → ruta de Blender en **Editor** Settings (`blender_path`, al **ejecutable** no a la carpeta) + versión 3.3+; si CI, pásate a `.glb`.
+6. **¿Atraviesa el suelo?** → "Create Collision" en el import o sufijo `-col` (en glTF prefiere el sufijo en el **nodo**; `-colonly` sobre el nombre de la **malla** puede ignorarse, issue #115869).
 7. **¿Accesorios no animan tras retarget?** → desactiva retargeting para ese personaje.
 8. **¿Código de anims roto en 4.6?** → props del `AnimationPlayer` ahora `StringName` (`&"name"` / `StringName`).
 9. **¿Mod/user-content en runtime?** → `GLTFDocument.append_from_file()` + `generate_scene()` (no `ResourceImporterScene`, que es editor-only).
@@ -2563,7 +2565,7 @@ El 70% de los bugs se disuelven con cuatro conceptos canónicos de 4.6 y herrami
 
 | Concepto | Comportamiento documentado (4.6) |
 |---|---|
-| **Orden de inicialización** | `_init()` (constructor, árbol NO disponible) → asignación de `@onready var` → `_enter_tree()` → `_ready()`. `_ready` corre **bottom-up**: los hijos están listos ANTES que el padre. `$`/`get_node()` solo funciona dentro del árbol, nunca en `_init`. |
+| **Orden de inicialización** | `_init()` (constructor, árbol NO disponible) → `_enter_tree()` → (tras `NOTIFICATION_POST_ENTER_TREE`) asignación de `@onready var` → `_ready()`. Las `@onready` se resuelven justo ANTES de `_ready`, DESPUÉS de `_enter_tree` (dentro de `_enter_tree` aún NO están asignadas). `_ready` corre **bottom-up**: los hijos están listos ANTES que el padre. `$`/`get_node()` solo funciona dentro del árbol, nunca en `_init`. |
 | **`@onready`** | Garantiza solo que **tus propios hijos** existen justo antes de `_ready`. NO garantiza hermanos, padres ni autoloads. No cambia el orden bottom-up. |
 | **Hilo de física** | Toda mutación de cuerpos físicos (`velocity`, `move_and_slide`, `apply_force`) va en `_physics_process(delta)` (tick fijo, 60/s por defecto). `_process` es framerate variable. |
 | **`Object` vs `RefCounted`** | `Node` deriva de `Object`: libéralo con `queue_free()`, no se autolibera. `RefCounted`/`Resource` usa conteo de referencias; los **ciclos NO se rompen solos**. |
@@ -2717,8 +2719,16 @@ public partial class PlayerController : Node3D
             _emitter.TreeExiting -= OnEmitterGone;
     }
 
-    // Fisica SIEMPRE en _PhysicsProcess; await sobre senal usa ToSignal con SignalName.*
-    public override async void _PhysicsProcess(double delta) { /* mover cuerpos aqui */ await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); }
+    // Fisica SIEMPRE en _PhysicsProcess: SINCRONO, muta los cuerpos aqui (nunca async void en un callback de motor).
+    public override void _PhysicsProcess(double delta) { /* mover CharacterBody3D aqui */ }
+
+    // await sobre senal -> en una corrutina async SEPARADA (invocada explicitamente), no en el callback de fisica.
+    // 'async void' en _PhysicsProcess/_Process es antipatron: re-entrancia y excepciones no observables.
+    private async void OpenChest(AnimationPlayer anim)
+    {
+        anim.Play("open");
+        await ToSignal(anim, AnimationPlayer.SignalName.AnimationFinished);
+    }
 }
 ```
 
@@ -2826,12 +2836,12 @@ Ver ejemplo `DebugTools.cs`. Nota: **web NO tiene C#** (renderer Compatibility);
 - **`get_stack()` / `print_stack()` / `print_debug()` devuelven vacío o no hacen nada sin servidor de debug.** No funcionan en release, ni en build debug exportada no conectada, ni desde un `Thread`. Para release/crash reports activa `ProjectSettings → debug/settings/gdscript/always_track_call_stacks` (+ `Engine.capture_script_backtraces()`). Salvedad verificada (godot#106484): en exports release los números de línea del backtrace son incorrectos (apuntan a la firma de la función) — usa `function`, no `line`.
 - **Firma OBSOLETA de Godot 3 en `add_custom_monitor`** — el error que más comete una IA: `add_custom_monitor("Player Health", self, "_get_health")`. En Godot 4 es `(id: StringName, callable: Callable, arguments := [])`. La vieja produce `Invalid type in function 'add_custom_monitor': argument 2 should be Callable`. Pasa un Callable: `_get_health` en GDScript, `new Callable(this, MethodName.X)` o `Callable.From(...)` en C#.
 - **`Custom monitor 'X' already exists.`** Re-registrar el mismo id (autoload que sobrevive, `_ready()` que corre dos veces tras reparenting). Protégete con `if not Performance.has_custom_monitor(id):` y limpia en `_exit_tree()`.
-- **El callable de un monitor debe devolver número >= 0.** Devolver String/null/negativo rompe la gráfica en silencio (los negativos se clampean a 0). No hagas trabajo pesado dentro: se llama periódicamente (observer effect).
+- **El callable de un monitor debe devolver número >= 0.** La doc lo exige explícitamente: ha de devolver un entero o flotante cero o positivo; devolver String/null produce un valor inválido y rompe la gráfica en silencio. No hagas trabajo pesado dentro: se llama periódicamente (observer effect).
 - **"Mis breakpoints no pausan."** Causas en orden: *Skip Breakpoints* activado (botón pegado entre sesiones); corriendo en export release / sin conexión al editor; breakpoint en un `Thread` secundario; línea no ejecutable. Verifica sesión activa en el panel Debugger; lanza con F5 **desde el editor Godot**, no desde VSCode (el Remote scene tree no aparece vía VSCode — godot-vscode-plugin#567).
 - **Profiler vs Visual Profiler (error de categoría).** Profiler = tiempo CPU por función/script. Visual Profiler = coste del **renderer por frame** (GPU/render passes). Usar el equivocado persigue el cuello de botella incorrecto. Olvidar pulsar **Start** → "el profiler está vacío" (no graba por defecto).
 - **`debug_collisions_hint` por código en runtime a menudo NO dibuja** si el menú del editor estaba OFF (godot#64353): el menú y la propiedad chocan. Usa **uno solo**: para depuración manual, el menú *Debug → Visible Collision Shapes*; para builds de debug, setea la propiedad **antes del primer frame físico** (togglear en caliente no re-genera shapes ya creados). En exports, `CollisionPolygon2D` solo muestra contorno (godot#99935 — no es tu bug). Desactiva estas visualizaciones antes de medir frame time.
 - **"El Visual Profiler muestra tiempos CPU raros / Process tarda muchísimo sin justificación"** (godot#97473, #81435): a veces es tiempo de sincronización del frame contabilizado dentro de Process, o tiempos CPU del Visual Profiler poco fiables. Confirma con Self Time y un monitor de FPS. En **macOS/Metal el frametime GPU integrado está roto** (godot#102968): usa Apple Instruments.
-- **"Solo es lento en debug."** El debugger remoto añade overhead por nodo/llamada (foro "DEBUG in 4.5 is unusable"; godot#78754). **Antes de optimizar, mide con un export `template_release`.** Si el spike desaparece, era el debugger, no tu juego.
+- **"Solo es lento en debug."** El debugger remoto añade overhead por nodo/llamada (foro "DEBUG in 4.5 is unusable"). **Antes de optimizar, mide siempre con un export `template_release`.** Si el spike desaparece, era el debugger, no tu juego.
 - **Spike de "primera vez"** (primer disparo / primer enemigo / primera escena de combate): carga lazy de recursos y **compilación de shaders**. Fix: `preload()` y shader pre-warming (instancia el material una vez fuera de cámara en la pantalla de carga).
 - **Tracy no conecta:** requiere recompilar Godot con soporte de profiling (`tracy_enable=yes`), no sirve el binario oficial de release; la versión del viewer debe coincidir con el build. Sin `-fno-omit-frame-pointer -fno-inline -ggdb3` el callstack sale inútil.
 
@@ -2862,7 +2872,7 @@ Godot 4.6 (publicado 2026-01-27, ~4.6.3) ejecuta C# sobre **.NET 8 (LTS)**. Mono
 
 ### Enfoque nativo recomendado
 
-Antes de elegir lenguaje, una restricción dura que decide la arquitectura: **el web NO soporta C# en 4.6** (el export web usa el renderer Compatibility, que no embebe runtime .NET; issue abierto GH-70796). No hay flag que lo arregle. Si tu RPG 3D apunta a navegador, el core jugable va en GDScript o haces doble export.
+Antes de elegir lenguaje, una restricción dura que decide la arquitectura: **el web NO soporta C# en 4.6**. La causa es del runtime .NET, no del renderer: el runtime .NET hoy solo puede compilarse como "main module" y carece de código position-independent, así que no se embebe en el export WASM (issue abierto GH-70796). Aparte, el export web usa el renderer Compatibility, pero eso es ortogonal: el bloqueo de C# es del runtime, no del renderer. No hay flag que lo arregle. Si tu RPG 3D apunta a navegador, el core jugable va en GDScript o haces doble export.
 
 Recomendación de reuso (ponytail) por encima de escribir código:
 - **No escribas un `.csproj` a mano.** Deja que Godot lo cree: **Project > Tools > C# > Create C# solution**. El `Sdk="Godot.NET.Sdk/4.6.x"` y el `<TargetFramework>net8.0</TargetFramework>` los pone bien y evitas mismatches de versión.
@@ -2915,7 +2925,7 @@ Ver bloque de ejemplos (`Player.cs`, `Inventory.cs`, `Game.csproj`). Puntos idio
 **Source generators / `partial`:**
 - `GD0001: Missing partial modifier on declaration of type '...' that derives from 'GodotObject'` → añade `partial`. Toda clase que derive de `GodotObject` (incl. `Node`, `Resource`, `RefCounted`) lo necesita, **y todas las clases de una jerarquía de herencia y todos los `partial` de archivos múltiples**.
 - `GD0002` → la clase contenedora de una clase Godot anidada también debe ser `partial`.
-- **Niche (GH-104268):** una clase Godot **anidada dentro de una clase genérica** rompe los source generators con errores crípticos aunque pongas `partial` en todo. No está soportado. Desatasque: saca la clase al namespace de nivel superior.
+- **Niche (GH-104268):** una clase Godot **anidada dentro de una clase genérica** históricamente rompía los source generators con errores crípticos aunque pusieras `partial` en todo (corregido en PR #104279, milestone 4.5, así que en 4.6.x ya va bien). Si lo ves en una versión vieja, el desatasque es sacar la clase al namespace de nivel superior.
 - **`SignalName.X` marcado como `CS0246` por el IDE pero compila** → el generador emite el miembro y el language server (OmniSharp/Rider) está desincronizado. Fix: `dotnet build` desde terminal, reinicia el servidor de lenguaje, borra `obj/`+`bin/`. NO recurras al string mágico para "callarlo". (GH-81674, GH-82268)
 
 **Señales:**
@@ -2988,8 +2998,8 @@ Las cinco posturas, por debajo de su retórica, dicen lo mismo con distinto acen
 | Necesidad | Acción | Por qué |
 |---|---|---|
 | Física, character controller | **Reusa** `CharacterBody3D.move_and_slide()` sobre Jolt (default 3D en 4.6) | El engine lo testea en C++ cada release |
-| IK (pies en terreno, mano agarra arma) | **Reusa** el solver más simple: `TwoBoneIK3D` (2 huesos), `FABRIK3D`/`CCDIK3D` (cadenas) | Nunca escribas tu propio solver; `JacobianIK3D` solo si lo mides necesario |
-| Máquina de estados de locomoción (idle/run/jump) | **Reusa** `AnimationTree` + `StateMachine` (grafo) | Evita el `match state:` de 200 líneas y el breaking change `String`→`StringName` |
+| IK (pies en terreno, mano agarra arma) | **Reusa** el solver más simple: `TwoBoneIK3D` (2 huesos), `FABRIK3D`/`CCDIK3D` (cadenas; la suite completa incluye también `ChainIK3D`, `SplineIK3D`, `IterateIK3D`) | Nunca escribas tu propio solver; `JacobianIK3D` solo si lo mides necesario |
+| Máquina de estados de locomoción (idle/run/jump) | **Reusa** `AnimationTree` + `AnimationNodeStateMachine` (grafo, controlado por `AnimationNodeStateMachinePlayback.travel()`) | Evita el `match state:` de 200 líneas; además los nombres de animación pasaron de `String` a `StringName` en 4.6, otra razón para no manejar transiciones a mano con strings |
 | Navegación / pathfinding | **Reusa** `NavigationAgent3D` + `NavigationRegion3D` | No escribas A\* propio |
 | Serialización / save | **Reusa** `ResourceLoader`/`ResourceSaver` con datos como `Resource` | Versionan, cachean y referencian gratis |
 | Definición de item/quest/skill | **Construye** un `Resource` tipado (`.tres`) por entrada | Editable en Inspector, testeable, escala por *append* |
