@@ -6,7 +6,7 @@
 
 ### Hechos 4.6 aplicados
 - Jolt es el motor 3D por defecto en proyectos 4.6 nuevos; CharacterBody3D + move_and_slide es lógica del árbol de escena y no cambia, pero step-up de escaleras sigue sin ser automático.
-- Breaking 4.5→4.6: nombres de pista de AnimationPlayer String→StringName → recompilar ensamblado C#.
+- Breaking 4.6 (GH-110767): propiedades de nombre de animación de AnimationPlayer (current_animation/assigned_animation/autoplay/get_queue/señal current_animation_changed) String→StringName; leerlas como string rompe a nivel de fuente.
 - Typed dictionaries Dictionary[K,V] disponibles (no necesarios en este dominio concreto).
 
 ### Arquitectura

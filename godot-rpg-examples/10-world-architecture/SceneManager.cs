@@ -59,7 +59,7 @@ public partial class SceneManager : Node
         switch (status)
         {
             case ResourceLoader.ThreadLoadStatus.InProgress:
-                float p = _progress.Count > 0 ? (float)_progress[0] : 0f;
+                float p = _progress.Count > 0 ? _progress[0].AsSingle() : 0f;
                 EmitSignal(SignalName.LoadProgress, p);
                 break;
             case ResourceLoader.ThreadLoadStatus.Loaded:

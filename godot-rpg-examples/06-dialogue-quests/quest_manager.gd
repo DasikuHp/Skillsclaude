@@ -3,13 +3,13 @@
 # Conectar senales de gameplay, ej: enemy.died.connect(Quests.on_enemy_killed)
 extends Node
 
-signal objective_updated(quest: Resource, objective: QuestObjective)
-signal quest_completed(quest: Resource)
+signal objective_updated(quest: Quest, objective: QuestObjective)
+signal quest_completed(quest: Quest)
 
-## active contiene Resources de tipo Quest (Array[QuestObjective] dentro).
-var active: Array[Resource] = []
+## Quests activas, fuertemente tipadas (cada una con Array[QuestObjective] dentro).
+var active: Array[Quest] = []
 
-func add_quest(quest: Resource) -> void:
+func add_quest(quest: Quest) -> void:
 	if quest not in active:
 		active.append(quest)
 
@@ -21,13 +21,9 @@ func on_item_collected(item_id: StringName) -> void:
 
 func _progress(kind: QuestObjective.Kind, target: StringName) -> void:
 	for q in active:
-		var objectives: Array = q.get("objectives")
-		for obj: QuestObjective in objectives:
+		for obj in q.objectives:
 			if obj.kind == kind and obj.target == target and not obj.is_done():
 				obj.progress += 1
 				objective_updated.emit(q, obj)
-				if _is_complete(objectives):
+				if q.is_complete():
 					quest_completed.emit(q)
-
-func _is_complete(objectives: Array) -> bool:
-	return objectives.all(func(o: QuestObjective) -> bool: return o.is_done())

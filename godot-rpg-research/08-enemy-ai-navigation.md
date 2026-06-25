@@ -24,7 +24,7 @@
 
 ### 4.6 específico
 - 4.6.1: `map_get_closest_point_normal` ahora normalizado; hornear navmesh de GridMap colliders más rápido.
-- Gotcha C#: track names AnimationPlayer `String -> StringName` en 4.6 → recompilar ensamblado al migrar de 4.5.
+- Gotcha C# (GH-110767): propiedades de nombre de animación de AnimationPlayer (current_animation/assigned_animation/autoplay/get_queue) `String -> StringName` en 4.6; leerlas como string rompe a nivel de fuente.
 
 ### Addons
 - Navegación: nativo siempre.

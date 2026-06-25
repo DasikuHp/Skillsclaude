@@ -29,22 +29,38 @@ public partial class EnemyAvoidance : CharacterBody3D
 
     public override void _PhysicsProcess(double delta)
     {
-        if (_agent.IsNavigationFinished())
-            return;
+        // Gravedad aparte: el avoidance 2D (UseAvoidance3D == false, por defecto)
+        // ignora el eje Y, asi que NO la metemos por SetVelocity().
+        if (!IsOnFloor())
+        {
+            Vector3 v = Velocity;
+            v.Y -= Gravity * (float)delta;
+            Velocity = v;
+        }
 
-        if (Target != null && _agent.IsTargetReachable())
+        if (_agent.IsNavigationFinished())
+        {
+            MoveAndSlide();
+            return;
+        }
+
+        if (Target != null)
             _agent.TargetPosition = Target.GlobalPosition;
 
         Vector3 next = _agent.GetNextPathPosition();
         Vector3 desired = GlobalPosition.DirectionTo(next) * Speed;
-        desired.Y = Velocity.Y - Gravity * (float)delta; // gravedad antes del avoidance
         _agent.SetVelocity(desired);                     // NO mover aqui; esperar senal
     }
 
     private void OnSafeVelocity(Vector3 safeVelocity)
     {
-        // Issue #108252: el avoidance descarta la Y al terminar la nav. Reaplicar.
-        Velocity = safeVelocity;
+        // El avoidance 2D (use_3d_avoidance == false, por defecto) calcula solo en
+        // el plano x/z, asi que safe_velocity.Y siempre llega en 0. Si hicieramos
+        // Velocity = safeVelocity destruiriamos la gravedad cada frame. Reaplicamos
+        // la Y propia (issue #108252 ademas la pone en 0 al terminar la nav).
+        Vector3 v = safeVelocity;
+        v.Y = Velocity.Y;
+        Velocity = v;
         MoveAndSlide();
     }
 }

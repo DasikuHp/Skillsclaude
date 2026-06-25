@@ -32,7 +32,11 @@ public partial class EnemyChaser : CharacterBody3D
 
     private void RefreshTarget()
     {
-        if (Target != null && _agent.IsTargetReachable())
+        // Fijar siempre el target. IsTargetReachable() evalua contra el path YA
+        // computado (el target anterior), asi que usarla como guarda aqui crea un
+        // deadlock huevo-gallina: en la primera llamada devuelve false y el enemigo
+        // nunca arranca. Si quieres fallback, consultala en un frame posterior.
+        if (Target != null)
             _agent.TargetPosition = Target.GlobalPosition;
     }
 

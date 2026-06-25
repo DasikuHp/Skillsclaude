@@ -23,7 +23,8 @@ extends CharacterBody3D
 @onready var foot_target_l: Marker3D = $Visual/Skeleton3D/FootTarget_L
 @onready var foot_ray_l: RayCast3D = $FootRay_L
 
-# En 4.6 los parámetros/tracks son StringName y NO autoconvierten (#64171): cachéalos.
+# Los parámetros del AnimationTree son StringName; en GDScript String y StringName no
+# autoconvierten (#64171), así que se declaran como StringName con &"..." y se cachean.
 const ST_BLEND: StringName = &"parameters/Locomotion/blend_position"
 const ST_ATTACK: StringName = &"attack"
 const ST_IDLE: StringName = &"idle"
@@ -54,12 +55,12 @@ func _physics_process(delta: float) -> void:
 	_update_foot_ik()
 
 func _apply_root_motion(delta: float) -> void:
-	# Rotación absoluta vía accumulator (evita el bug incremental #93821 / #95688).
-	var rot := tree.get_root_motion_rotation_accumulator()
+	# Patrón canónico: corrige la posición local por el accumulator de rotación; válido
+	# incluso con cross-fade (evita el bug incremental #93821 / #95688).
+	var rot_acc := tree.get_root_motion_rotation_accumulator()
 	var pos: Vector3 = tree.get_root_motion_position()  # delta local, NO velocidad
-	transform.basis = Basis(rot) * transform.basis.orthonormalized()
-	var motion := transform.basis * pos
-	velocity = (motion / delta) if delta > 0.0 else Vector3.ZERO
+	var local := (rot_acc.inverse() * quaternion) * pos
+	velocity = (transform.basis * local) / delta if delta > 0.0 else Vector3.ZERO
 
 func _update_foot_ik() -> void:
 	if foot_ray_l.is_colliding():

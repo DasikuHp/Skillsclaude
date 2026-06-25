@@ -5,8 +5,8 @@
 // [Export] y [Signal] solo aceptan tipos Variant-compatibles (diagnostico
 // GD0202): usa Godot.Collections.Dictionary, nunca System.Collections.Generic.
 //
-// Gotcha 4.5->4.6: los nombres de tracks de AnimationPlayer pasaron de String a
-// StringName; si disparas animaciones de level-up por nombre, RECOMPILA el C#.
+// Gotcha 4.6 (GH-110767): current_animation/assigned_animation/autoplay/get_queue de
+// AnimationPlayer pasaron de String a StringName; leerlas como string rompe en compilacion.
 // Emitir senales custom: usa EmitSignal(SignalName.X, ...) (Issue #82268).
 using Godot;
 
@@ -21,8 +21,8 @@ public partial class Progression : Resource
     [Export] public Curve HpCurve { get; set; }
     [Export] public Godot.Collections.Dictionary<StringName, float> Resistances { get; set; } = new()
     {
-        { "fire", 0.25f },
-        { "ice", -0.5f },
+        { new StringName("fire"), 0.25f },
+        { new StringName("ice"), -0.5f },
     };
 
     [Export] public int Level { get; set; } = 1;

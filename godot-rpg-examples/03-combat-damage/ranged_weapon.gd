@@ -15,10 +15,14 @@ func fire() -> void:
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(from, to)
 	q.collision_mask = HURTBOX_LAYER
+	q.collide_with_areas = true   # las hurtboxes son Area3D; por defecto es false
+	q.collide_with_bodies = false # solo nos interesan las areas, saltamos cuerpos
 	var hit: Dictionary = space.intersect_ray(q)  # {} si no golpea nada
 	if hit.is_empty():
 		return
 	var collider: Object = hit["collider"]
 	if collider.has_method("take_damage"):
-		damage_info.source = self
-		collider.take_damage(damage_info)
+		# source es transitorio por disparo: duplica para no mutar el .tres compartido.
+		var info := damage_info.duplicate() as DamageInfo
+		info.source = self
+		collider.take_damage(info)

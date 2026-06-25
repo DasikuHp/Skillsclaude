@@ -12,7 +12,7 @@
 #   move_left, move_right, move_forward, move_back, jump
 # Notas 4.6:
 #   - Jolt es el motor 3D por defecto; CharacterBody3D funciona igual.
-#   - get_gravity() existe desde 4.4 y devuelve un Vector3.
+#   - get_gravity() existe desde 4.3 y devuelve un Vector3.
 class_name PlayerController
 extends CharacterBody3D
 

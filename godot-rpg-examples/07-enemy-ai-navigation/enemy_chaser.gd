@@ -33,7 +33,11 @@ func _on_repath() -> void:
 	_refresh_target()
 
 func _refresh_target() -> void:
-	if target and _agent.is_target_reachable():
+	# Siempre fijar el target; is_target_reachable() evalua contra el path YA
+	# computado (el target anterior), asi que usarla como guarda aqui crea un
+	# deadlock huevo-gallina: en la primera llamada devuelve false y el enemigo
+	# nunca arranca. Si quieres fallback, consultala en un frame posterior.
+	if target:
 		_agent.target_position = target.global_position
 
 func _physics_process(delta: float) -> void:

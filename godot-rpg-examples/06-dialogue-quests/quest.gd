@@ -1,14 +1,12 @@
 # quest.gd
-# Godot 4.6 - Quest y sus objetivos como Resource. Datos serializables (.tres).
-class_name QuestObjective
+# Godot 4.6 - Quest como Resource. Agrupa objetivos tipados (Array[QuestObjective]).
+# Un solo class_name por archivo: QuestObjective vive en quest_objective.gd.
+class_name Quest
 extends Resource
 
-enum Kind { KILL, COLLECT, TALK, REACH }
+@export var id: StringName = &""
+@export var title: String = ""
+@export var objectives: Array[QuestObjective] = []
 
-@export var kind: Kind = Kind.KILL
-@export var target: StringName = &""
-@export var required: int = 1
-@export var progress: int = 0
-
-func is_done() -> bool:
-	return progress >= required
+func is_complete() -> bool:
+	return objectives.all(func(o: QuestObjective) -> bool: return o.is_done())

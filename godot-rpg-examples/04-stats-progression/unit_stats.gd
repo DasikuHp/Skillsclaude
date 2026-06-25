@@ -33,6 +33,9 @@ var current_hp: int = 0
 func setup_unique() -> UnitStats:
 	# Deep-duplicate para no compartir estado con otras instancias del .tres.
 	var copy := duplicate(true) as UnitStats
+	# OJO: si en el futuro UnitStats lleva Array[StatModifier] u otros subrecursos,
+	# duplicate(true) NO entra en Array/Dictionary (Issue #74918) -> duplicalos a
+	# mano aqui, p.ej.: copy.mods = copy.mods.map(func(m): return m.duplicate(true))
 	copy.current_hp = copy.max_hp_at(copy.level)
 	return copy
 
@@ -62,7 +65,9 @@ func add_xp(amount: int) -> void:
 	xp_changed.emit(current_xp, xp_for_next_level())
 
 func apply_damage(amount: float, type: StringName) -> int:
-	var resist := resistances.get(type, 0.0)
+	# Los metodos de un Dictionary tipado (get/etc.) devuelven Variant, no el tipo
+	# de valor; anotamos explicitamente para conservar el tipado float (Issue #105843).
+	var resist: float = resistances.get(type, 0.0)
 	var dealt := int(round(amount * (1.0 - resist)))
 	var old_hp := current_hp
 	current_hp = maxi(0, current_hp - dealt)

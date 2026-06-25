@@ -6,7 +6,11 @@ extends Resource
 
 signal changed
 
-# id -> cantidad para items apilables.
+# id -> cantidad. Nota: este ejemplo minimo apila tambien los no-apilables por
+# simplicidad (un unico contador por id). Para estado por instancia (durabilidad,
+# encantamientos) guarda copias duplicate(true) en una coleccion aparte
+# (Array[ItemData] o claves unicas por instancia): varias instancias colisionarian
+# bajo la misma id.
 @export var stacks: Dictionary[StringName, int] = {}
 # id -> blueprint, para resolver icono/nombre sin volver a cargar el .tres.
 @export var items: Dictionary[StringName, ItemData] = {}
@@ -20,6 +24,7 @@ func add_item(item: ItemData, amount: int = 1) -> int:
 		stacks[item.id] = allowed
 		changed.emit()
 		return added
+	# No-apilable: en este ejemplo se cuenta igual por id (simplificacion intencional).
 	stacks[item.id] = stacks.get(item.id, 0) + amount
 	changed.emit()
 	return amount

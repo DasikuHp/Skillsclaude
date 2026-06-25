@@ -11,8 +11,10 @@
 // Gotchas C# 4.6:
 //   - Velocity/Rotation son struct por valor: copiar -> mutar -> reasignar.
 //   - _PhysicsProcess recibe double: castear a (float) para Vector3.
-//   - Breaking 4.5->4.6: pistas de AnimationPlayer String->StringName;
-//     recompilar el ensamblado C# tras actualizar.
+//   - Breaking 4.6 (afecta a la seccion de animacion, no a este script):
+//     la API expuesta de AnimationPlayer paso de String a StringName (GH-110767);
+//     revisa los literales string que pasas a APIs de animacion (puede requerir
+//     StringName explicito). La recompilacion del ensamblado es automatica al build con 4.6.
 using Godot;
 
 public partial class PlayerController : CharacterBody3D

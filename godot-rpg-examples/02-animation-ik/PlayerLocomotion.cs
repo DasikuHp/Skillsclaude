@@ -10,9 +10,13 @@ public partial class PlayerLocomotion : CharacterBody3D
 
     [Signal] public delegate void AttackStartedEventHandler();
 
-    // En 4.6 los nombres de parámetro/track son StringName. String y StringName NO
-    // autoconvierten (#64171); cachéalos. Tras migrar a 4.6 hay que RECOMPILAR el
-    // ensamblado C# por el cambio String -> StringName en los track names.
+    // En C# los string literales se convierten IMPLÍCITAMENTE a StringName (cast
+    // asignante), por lo que esto compila. Cachear en `static readonly StringName` es por
+    // RENDIMIENTO: evitar alocar un StringName nuevo por frame (en _PhysicsProcess). El
+    // issue #64171 (falta de autoconversión) es de GDScript, no de C#. En 4.6 (GH-110767)
+    // las propiedades de NOMBRE de animación de AnimationPlayer (current_animation,
+    // assigned_animation, autoplay, get_queue()) pasaron a StringName: leerlas como
+    // `string` rompe a nivel de fuente.
     private static readonly StringName BlendParam = "parameters/Locomotion/blend_position";
     private static readonly StringName AttackState = "attack";
 
@@ -52,11 +56,12 @@ public partial class PlayerLocomotion : CharacterBody3D
 
     private void ApplyRootMotion(float delta)
     {
-        Quaternion rot = _tree.GetRootMotionRotationAccumulator(); // struct por valor
-        Vector3 pos = _tree.GetRootMotionPosition();               // delta local
-        Transform = Transform with { Basis = new Basis(rot) * Transform.Basis.Orthonormalized() };
-        Vector3 motion = Transform.Basis * pos;
-        Velocity = delta > 0f ? motion / delta : Vector3.Zero;
+        // Patrón canónico: corrige la posición local por el accumulator de rotación;
+        // válido con cross-fade (evita el bug incremental #93821 / #95688).
+        Quaternion rotAcc = _tree.GetRootMotionRotationAccumulator(); // struct por valor
+        Vector3 pos = _tree.GetRootMotionPosition();                  // delta local
+        Vector3 local = (rotAcc.Inverse() * Quaternion) * pos;
+        Velocity = delta > 0f ? (Transform.Basis * local) / delta : Vector3.Zero;
     }
 
     private void UpdateFootIk()

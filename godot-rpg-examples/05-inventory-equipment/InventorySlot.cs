@@ -3,8 +3,8 @@
 // Gotchas 4.6:
 //  - _GetDragData devuelve Variant NO anulable: usa `default`, no `null` (issue #78507).
 //  - Usa Godot.Collections.Dictionary, no System.*, y lee con .As<T>().
-//  - Tras actualizar a 4.6, recompila por el cambio String->StringName en
-//    nombres de pista de AnimationPlayer si tu UI dispara animaciones por nombre.
+//  - Gotcha 4.6 (GH-110767): current_animation/assigned_animation/autoplay/get_queue de
+//    AnimationPlayer pasaron de String a StringName; leerlas como string rompe en compilacion.
 using Godot;
 using Godot.Collections;
 
@@ -49,8 +49,13 @@ public partial class InventorySlot : PanelContainer
 
     public override bool _CanDropData(Vector2 atPosition, Variant data)
     {
+        // Variant.As<Dictionary>() NO devuelve null si el tipo no coincide:
+        // devuelve un Dictionary vacio. Valida el tipo con VariantType para que
+        // el guard sea tan robusto como `data is Dictionary` en GDScript.
+        if (data.VariantType != Variant.Type.Dictionary)
+            return false;
         var dict = data.As<Dictionary>();
-        if (dict == null || !dict.ContainsKey("item"))
+        if (!dict.ContainsKey("item"))
             return false;
 
         var dragged = dict["item"].As<ItemData>();

@@ -22,7 +22,7 @@ enum State { IDLE, PATROL, CHASE, ATTACK }
 var _target: Node3D
 var _patrol_index: int = 0
 
-# Tabla de nombres para depurar transiciones (Dictionary tipado 4.6).
+# Tabla de nombres para depurar transiciones (Dictionary tipado, desde 4.4).
 var _state_names: Dictionary[State, StringName] = {
 	State.IDLE: &"idle",
 	State.PATROL: &"patrol",
@@ -55,7 +55,9 @@ func _do_patrol() -> void:
 	_move_to_agent(speed)
 
 func _do_chase() -> void:
-	if _target and _agent.is_target_reachable():
+	# Fijar siempre el target: is_target_reachable() mide contra el path anterior
+	# y devolveria false en la primera llamada (deadlock huevo-gallina).
+	if _target:
 		_agent.target_position = _target.global_position
 	_move_to_agent(speed)
 
@@ -79,6 +81,7 @@ func _goto_next_patrol_point() -> void:
 func _change_state(new_state: State) -> void:
 	if new_state == state:
 		return
+	print("state: ", _state_names[state], " -> ", _state_names[new_state])
 	state = new_state
 
 func _on_detection_area_body_entered(body: Node3D) -> void:

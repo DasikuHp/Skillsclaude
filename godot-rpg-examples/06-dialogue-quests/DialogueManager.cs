@@ -3,8 +3,9 @@ using Godot;
 // Godot 4.6 / .NET 8 - Autoload "Dialogue". Registrar en Project Settings -> Autoload.
 // El delegate de cada senal DEBE terminar en "EventHandler".
 // Emision con EmitSignal(SignalName.X, ...). La UI conecta con += (fuertemente tipado).
-// Gotcha 4.6: nombres de tracks de AnimationPlayer pasaron de String a StringName;
-// si disparas animaciones por nombre, recompila el ensamblado C# y usa StringName.
+// Gotcha 4.6 (GH-110767): propiedades de nombre de animacion de AnimationPlayer
+// (current_animation, assigned_animation, autoplay, get_queue()) pasaron a StringName;
+// leerlas como string rompe al migrar de 4.5 (un literal sigue compilando por conversion implicita).
 public partial class DialogueManager : Node
 {
     [Signal] public delegate void LineDisplayedEventHandler(DialogueLine line);

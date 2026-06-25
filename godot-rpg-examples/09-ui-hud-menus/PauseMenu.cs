@@ -3,8 +3,12 @@ using Godot;
 // PauseMenu.cs
 // Raiz: Control. Pone su ProcessMode en WhenPaused; el CanvasLayer padre
 // debe estar en Always/WhenPaused o los botones quedan inclicables en pausa.
-// Nota 4.5->4.6: los nombres de pista de AnimationPlayer pasaron de String a
-// StringName, recompila el proyecto C# tras actualizar.
+// Nota 4.5->4.6 (GH-110767): varias propiedades de nombre de animacion de
+// AnimationPlayer pasaron de String a StringName (current_animation,
+// assigned_animation, autoplay, get_queue() -> StringName[], y el parametro de
+// current_animation_changed). Cambio incompatible a nivel de fuente: el codigo
+// que LEE estas propiedades (p.ej. string a = player.CurrentAnimation) rompe;
+// ajusta esos tipos a StringName/StringName[] y recompila.
 public partial class PauseMenu : Control
 {
     public override void _Ready()

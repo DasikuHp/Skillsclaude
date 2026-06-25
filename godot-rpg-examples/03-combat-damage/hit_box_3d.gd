@@ -4,8 +4,9 @@
 # El CollisionShape3D hijo "HitShape" debe arrancar con disabled = true.
 #
 # Capas recomendadas (ningun cast en runtime, el filtrado lo hacen las capas):
-#   collision_layer = capa "player_hitbox", collision_mask = 0
-# La hurtbox del enemigo escucha; este hitbox solo necesita ser monitorable/visible.
+#   collision_layer = capa "player_hitbox", collision_mask = capa "enemy_hurtbox", monitoring = true
+# Este hitbox ES el que escucha y llama take_damage; necesita la capa de la hurtbox
+# en su mask y monitoring=true. La hurtbox solo se deja detectar (monitorable=true, mask=0).
 class_name HitBox3D
 extends Area3D
 
@@ -27,7 +28,10 @@ func end_attack() -> void:
 	_shape.disabled = true
 
 func _on_area_entered(area: Area3D) -> void:
-	var victim: Node = area.owner
+	# owner solo apunta a la victima si la hurtbox vive dentro de una escena
+	# instanciada cuyo root lleva take_damage; si se anadio en runtime sin owner,
+	# area.owner es null. Fallback robusto al padre directo.
+	var victim: Node = area.owner if area.owner != null else area.get_parent()
 	if victim == null:
 		return
 	var id := victim.get_instance_id()
@@ -35,5 +39,8 @@ func _on_area_entered(area: Area3D) -> void:
 		return
 	_already_hit[id] = true
 	if victim.has_method("take_damage"):
-		damage_info.source = owner as Node3D
-		victim.take_damage(damage_info)
+		# source es un campo transitorio por golpe: duplicamos para no mutar el
+		# .tres compartido entre atacantes (aliasing). Ver Resource.duplicate().
+		var info := damage_info.duplicate() as DamageInfo
+		info.source = owner as Node3D
+		victim.take_damage(info)

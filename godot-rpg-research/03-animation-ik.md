@@ -30,7 +30,7 @@ Las páginas `docs.godotengine.org/.../classes/*` devolvieron HTTP 403 vía WebF
 
 ### Confirmaciones de los hechos del dossier
 - 7 solvers IK + jerarquía (FABRIK3D : IterateIK3D) confirmados.
-- StringName en track names (breaking 4.5→4.6): coherente con que las firmas de SM playback ya devuelven/aceptan StringName.
+- StringName en propiedades de nombre de animación de AnimationPlayer (breaking 4.6, GH-110767): coherente con que las firmas de SM playback ya devuelven/aceptan StringName.
 - Root motion accumulator para evitar bug de rotación incremental: el método existe (verificado).
 
 ## Fuentes

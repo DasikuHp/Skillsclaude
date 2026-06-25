@@ -5,7 +5,7 @@
 - `Dictionary[K, V]` tipado confirmado en la doc 4.6 de Dictionary. `Dictionary[StringName, int]` válido. StringName = strings interned, comparación por puntero. Acceso `dict.key` NO fiable con claves StringName -> usar `dict[&"key"]`.
 - Items como `Resource` + `@export` (`[GlobalClass]`/`[Export]` en C#); `.tres` data-driven; clase aparece en *New Resource* por tener `class_name`/`[GlobalClass]`.
 - C#: `_GetDragData` retorna `Variant` no anulable (no `null`, usar `default`). Issue #78507 documenta el historial del bug del tipo de retorno. Usar `Godot.Collections.Dictionary/Array` (no `System.*`) para cruzar el límite Variant; leer con `.As<T>()`.
-- Gotcha 4.5->4.6: nombres de pista de AnimationPlayer pasaron de String a StringName -> recompilar C#.
+- Gotcha 4.6 (GH-110767): propiedades de nombre de animación de AnimationPlayer (current_animation/assigned_animation/autoplay/get_queue) String->StringName; leerlas como string rompe en compilación.
 - Resources compartidos por defecto: `duplicate(true)` para deep copy de subrecursos; `duplicate()` simple no basta (issue #37222). `resource_local_to_scene` no siempre fiable (issue #45350).
 
 ### Addons

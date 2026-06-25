@@ -65,16 +65,16 @@ Player (CharacterBody3D)
         └── Camera3D
 ```
 
-La clave del diseño es **desacoplar "hacia dónde miro" de "cuánto se acerca la cámara"**: el `CameraPivot` (un simple `Node3D`) recibe la rotación del ratón, y la `SpringArm3D` solo gestiona la distancia/colisión hacia atrás. El `SpringArm3D` "castea" un rayo (o una forma) por su eje −Z y reposiciona a sus hijos en el punto de colisión, con un `margin` opcional ([SpringArm3D docs](https://docs.godotengine.org/en/4.6/tutorials/3d/spring_arm.html)).
+La clave del diseño es **desacoplar "hacia dónde miro" de "cuánto se acerca la cámara"**: el `CameraPivot` (un simple `Node3D`) recibe la rotación del ratón, y la `SpringArm3D` solo gestiona la distancia/colisión hacia atrás. El `SpringArm3D` castea un rayo (o, si se le asigna un shape, una forma) a lo largo de su eje Z local y reposiciona a sus hijos en el punto de colisión, con un `margin` opcional ([SpringArm3D docs](https://docs.godotengine.org/en/4.6/tutorials/3d/spring_arm.html)).
 
 **APIs nativas (verificadas en docs 4.6):**
 
-- `CharacterBody3D.velocity: Vector3` — propiedad; `move_and_slide()` la lee y la actualiza. En 4.x `move_and_slide()` **no acepta argumento** de velocidad (a diferencia de Godot 3) ([CharacterBody3D docs](https://docs.godotengine.org/en/stable/classes/class_characterbody3d.html)).
+- `CharacterBody3D.velocity: Vector3` — propiedad; `move_and_slide()` la lee y la actualiza. En 4.x `move_and_slide()` **no acepta argumento** de velocidad (a diferencia de Godot 3) ([CharacterBody3D docs](https://docs.godotengine.org/en/4.6/classes/class_characterbody3d.html)).
 - `move_and_slide() -> bool`, `is_on_floor()`, `is_on_wall()`, `is_on_ceiling()`.
-- `get_gravity() -> Vector3` — lee la gravedad del área/ProjectSettings como vector; preferido sobre leer manualmente el escalar `physics/3d/default_gravity` ([CharacterBody2D/3D guide](https://docs.godotengine.org/en/stable/tutorials/physics/using_character_body_2d.html)).
+- `get_gravity() -> Vector3` — lee la gravedad del área/ProjectSettings como vector; preferido sobre leer manualmente el escalar `physics/3d/default_gravity` ([CharacterBody2D/3D guide](https://docs.godotengine.org/en/4.6/tutorials/physics/using_character_body_2d.html)).
 - `floor_snap_length: float` (default 0.1) — pega el cuerpo al suelo tras `move_and_slide()`; subir a ~0.3–1.0 m en terreno irregular o bajadas.
 - `floor_max_angle: float` (default 0.785398 rad ≈ 45°), `floor_stop_on_slope: bool` (default `true`), `motion_mode` (`MOTION_MODE_GROUNDED` por defecto).
-- `SpringArm3D.spring_length`, `margin`, `collision_mask`, `shape: Shape3D` (si se asigna hace shape-cast en lugar de raycast), y `add_excluded_object(rid: RID)` para excluir el propio collider del Player ([SpringArm3D docs](https://docs.godotengine.org/en/stable/classes/class_springarm3d.html)).
+- `SpringArm3D.spring_length`, `margin`, `collision_mask`, `shape: Shape3D` (si se asigna hace shape-cast en lugar de raycast), y `add_excluded_object(rid: RID)` para excluir el propio collider del Player ([SpringArm3D docs](https://docs.godotengine.org/en/4.6/classes/class_springarm3d.html)).
 - `Input.get_vector(neg_x, pos_x, neg_y, pos_y, deadzone=-1.0) -> Vector2`, `InputEventMouseMotion.relative`, `Input.mouse_mode = MOUSE_MODE_CAPTURED`.
 
 **Jolt por defecto:** en proyectos 4.6 nuevos Jolt es el motor 3D por defecto. `CharacterBody3D` + `move_and_slide()` es lógica de cuerpo cinemático en el árbol de escena y funciona igual; pero el step-up/down de escaleras **sigue sin ser automático** (ver Pitfalls).
@@ -263,7 +263,7 @@ public partial class PlayerController : CharacterBody3D
 **Gotchas C#:**
 - `Velocity` (y `Rotation`) son `struct` por valor: **no** se puede `Velocity.X = ...` directamente sobre la propiedad; copia a un local, mútalo y reasigna.
 - `_PhysicsProcess(double delta)` recibe `double`; castea a `(float)delta` para multiplicar `Vector3`.
-- **Breaking 4.5→4.6**: los nombres de pista de `AnimationPlayer` pasaron de `String` a `StringName`. Tras actualizar a 4.6 hay que **recompilar el ensamblado C#**; el código que pasaba literales `string` a APIs de animación puede necesitar `StringName` explícito.
+- **Breaking 4.6** (aplica a la sección de animación, no a este controlador): la API expuesta de `AnimationPlayer` pasó a usar `StringName` en vez de `String` (GH-110767). Tras actualizar, revisa el código C# que pasa literales `string` a APIs de animación: puede requerir `StringName` explícito al compilar. La recompilación del ensamblado C# es automática al hacer build con 4.6.
 
 ### Nodos/clases 4.6
 
@@ -281,20 +281,20 @@ public partial class PlayerController : CharacterBody3D
 
 - **Gravedad acumulada en suelo**: nunca `velocity += get_gravity()*delta` incondicional; envuélvelo en `if not is_on_floor()`, si no `velocity.y` crece sin límite y `is_on_floor()` falla en bordes.
 - **No resetear la velocidad entera**: `velocity = Vector3.ZERO` al inicio del frame descarta gravedad y momentum que calculó `move_and_slide()`. Resetea solo los ejes XZ que controlas.
-- **`move_and_slide()` sin argumento**: en 4.x lee de la propiedad `velocity`; si nunca la asignas, el cuerpo no se mueve ([CharacterBody3D guide](https://docs.godotengine.org/en/stable/tutorials/physics/using_character_body_2d.html)).
+- **`move_and_slide()` sin argumento**: en 4.x lee de la propiedad `velocity`; si nunca la asignas, el cuerpo no se mueve ([CharacterBody3D guide](https://docs.godotengine.org/en/4.6/tutorials/physics/using_character_body_2d.html)).
 - **SpringArm colapsando**: sin `add_excluded_object(get_rid())` el brazo detecta el propio cuerpo del Player y la cámara se pega a él. Alternativa: poner al Player en una capa que la `collision_mask` del brazo no incluya.
 - **`floor_snap_length` corto**: el personaje "despega" en cimas de pendientes y pierde contacto en bajadas/escalones pequeños (godot#71993). Subir a ~0.3–1.0 m; con 0 el snapping se desactiva.
 - **Deslizar parado en pendientes**: si `floor_max_angle` es menor que el ángulo de la rampa, Godot la trata como pared y desliza. Asegura `floor_stop_on_slope=true` y un ángulo que cubra tus rampas ([Bugnet](https://bugnet.io/blog/fix-characterbody3d-sliding-down-slopes-idle-godot)).
 - **Step-up de escaleras NO automático**: limitación abierta del motor (godot-proposals#2751); con Jolt por defecto en 4.6 tampoco hay step-up integrado en `move_and_slide`. Soluciones: shape-cast manual de step-up o un addon.
 - **Acumulación de `event.relative`**: si la acumulación de input está desactivada pueden llegar varios `InputEventMouseMotion` por frame; suma (no asignes) deltas ([Yo Soy Freeman](https://yosoyfreeman.github.io/article/godot/tutorial/achieving-better-mouse-input-in-godot-4-the-perfect-camera-controller/)).
-- **Recompilar C# tras 4.6**: cambio `String`→`StringName` en pistas de animación.
+- **C# y el cambio `String`→`StringName` en `AnimationPlayer` (GH-110767)**: aplica a la sección de animación, no a este controlador; tras actualizar a 4.6 revisa los literales `string` que pasas a APIs de animación (puede requerir `StringName` explícito). La recompilación del ensamblado es automática al hacer build con 4.6.
 
 ### Addon vs construirlo
 
 - **Rueda propio** el movimiento de `CharacterBody3D`: son ~40 líneas y en un RPG querrás control total de slopes, snap, estados y locomoción. Los nodos nativos cubren el 90%.
 - **Usa Phantom Camera** ([ramokz](https://github.com/ramokz/phantom-camera)) si necesitas múltiples cámaras, transiciones cinemáticas o lock-on a objetivos (típico de RPG de acción) — estilo Cinemachine, ahorra mucho frente a gestionar SpringArm a mano.
 - **Para solo la cámara** (sin lógica cinemática), `SpringArm3D` nativo + pivote es suficiente; no necesitas addon.
-- Como **arranque/prototipo** para 4.6: *Real Controller* ([asset 4494](https://godotengine.org/asset-library/asset/4494)) o *Third Person Controller* ([asset 3934](https://godotengine.org/asset-library/asset/3934), soporta 4.4/4.5/4.6); el repo MIT de GDQuest ([gdquest-demos](https://github.com/gdquest-demos/godot-4-3d-third-person-controller)) es excelente referencia (se escribió para 4.x, los patrones son idénticos en 4.6 — verifica nombres de pista de animación tras importar por el cambio String→StringName).
+- Como **arranque/prototipo** para 4.6: *Real Controller* ([asset 4494](https://godotengine.org/asset-library/asset/4494)) o *Third Person Controller* ([asset 3934](https://godotengine.org/asset-library/asset/3934), soporta 4.4/4.5/4.6); el repo MIT de GDQuest ([gdquest-demos](https://github.com/gdquest-demos/godot-4-3d-third-person-controller)) es excelente referencia (se escribió para 4.x, los patrones son idénticos en 4.6 — verifica las propiedades de nombre de animación (`current_animation`/`assigned_animation`/`autoplay`) tras importar, por el cambio String→StringName de 4.6 (GH-110767)).
 
 **Veredicto ponytail:** NO construyas tu propio sistema de cámara con raycasts ni una FSM de cámara — `SpringArm3D` + un `Node3D` pivote ya hacen colisión, margen y shape-cast nativamente; reutiliza Phantom Camera solo si el RPG necesita lock-on/cinemáticas. Lo único que escribes a mano es la locomoción de `CharacterBody3D` (~40 líneas), porque ahí sí quieres control total de slopes y estados.
 
@@ -304,15 +304,15 @@ La animación de personaje en un RPG 3D de Godot 4.6 se resuelve con una pila na
 
 ### Enfoque nativo recomendado
 
-**Datos — `AnimationPlayer`.** Banco de clips. En 4.6 los nombres de track y de animación son `StringName` (breaking change 4.5→4.6; recompilar el ensamblado C#). El track del hueso raíz se marca como root motion vía la propiedad `root_motion_track` del `AnimationMixer` ([class_animationplayer 4.6](https://docs.godotengine.org/en/4.6/classes/class_animationplayer.html)).
+**Datos — `AnimationPlayer`.** Banco de clips. En 4.6 (GH-110767) varias propiedades de NOMBRE DE ANIMACIÓN pasaron de `String` a `StringName`: `current_animation`, `assigned_animation`, `autoplay`, `get_queue()` (ahora `StringName[]`) y el parámetro de la señal `current_animation_changed`. La guía oficial lo clasifica como "neither binary nor source compatible": en C# un string literal pasado a métodos que toman `StringName` sigue compilando por conversión implícita, pero LEER esas propiedades como `string` rompe a nivel de fuente. El track del hueso raíz se marca como root motion vía la propiedad `root_motion_track` del `AnimationMixer` ([class_animationplayer 4.6](https://docs.godotengine.org/en/4.6/classes/class_animationplayer.html), [migración a 4.6](https://docs.godotengine.org/en/4.6/tutorials/migrating/upgrading_to_godot_4.6.html)).
 
 **Control — `AnimationTree`** (hereda de `AnimationMixer` en 4.6, [AnimationTree.xml](https://github.com/godotengine/godot/blob/master/doc/classes/AnimationTree.xml)). `tree_root` apunta a un `AnimationNodeStateMachine` (o `AnimationNodeBlendTree`); `anim_player` (NodePath) al `AnimationPlayer`; `advance_expression_base_node` al nodo base para expresiones de transición. El root motion se lee por frame con métodos heredados de `AnimationMixer`: `get_root_motion_position() -> Vector3` (delta de posición, NO velocidad), `get_root_motion_rotation() -> Quaternion`, `get_root_motion_rotation_accumulator() -> Quaternion` y `get_root_motion_position_accumulator() -> Vector3` ([AnimationMixer.xml](https://github.com/godotengine/godot/blob/master/doc/classes/AnimationMixer.xml)).
 
-**Máquina de estados — `AnimationNodeStateMachine` + `AnimationNodeStateMachinePlayback`.** El playback se obtiene con `tree.get("parameters/playback")` y se castea a `AnimationNodeStateMachinePlayback`. Firmas verificadas: `travel(to_node: StringName, reset_on_teleport := true)`, `start(node: StringName, reset := true)`, `stop()`, `get_current_node() -> StringName`, `get_travel_path() -> StringName[]`, `is_playing() -> bool`. `travel()` recorre el grafo de transiciones con A\* ([AnimationNodeStateMachinePlayback.xml](https://github.com/godotengine/godot/blob/master/doc/classes/AnimationNodeStateMachinePlayback.xml), [kidscancode recipe](https://kidscancode.org/godot_recipes/4.x/animation/using_animation_sm/index.html)).
+**Máquina de estados — `AnimationNodeStateMachine` + `AnimationNodeStateMachinePlayback`.** El playback se obtiene con `tree.get("parameters/playback")` y se castea a `AnimationNodeStateMachinePlayback`. Firmas verificadas: `travel(to_node: StringName, reset_on_teleport := true, start_position := 0.0)`, `start(node: StringName, reset := true, start_position := 0.0)`, `stop()`, `get_current_node() -> StringName`, `get_travel_path() -> StringName[]`, `is_playing() -> bool`. `travel()` recorre el grafo de transiciones con A\* ([AnimationNodeStateMachinePlayback.xml](https://github.com/godotengine/godot/blob/master/doc/classes/AnimationNodeStateMachinePlayback.xml), [kidscancode recipe](https://kidscancode.org/godot_recipes/4.x/animation/using_animation_sm/index.html)).
 
 **Locomoción — `AnimationNodeBlendSpace2D`.** Mapea un `Vector2` (p. ej. x = strafe, y = forward/back) a clips ubicados en puntos 2D que Godot triangula. Se controla con `tree.set("parameters/<Nodo>/blend_position", Vector2(x, y))`.
 
-**Post-pose / IK — `Skeleton3D` + `SkeletonModifier3D` / `IKModifier3D`.** Los modificadores son hijos del `Skeleton3D` y corren **después** de evaluar el `AnimationTree`, en el orden del árbol de escena. `IKModifier3D` (hereda de `SkeletonModifier3D`) es la base de la suite IK; su única propiedad propia relevante es `mutable_bone_axes` (bool, default `true`) y gestiona N cadenas vía `setting_count` / `set_setting_count(n)` / `clear_settings()` ([IKModifier3D.xml](https://github.com/godotengine/godot/blob/master/doc/classes/IKModifier3D.xml), [artículo oficial IK 4.6](https://godotengine.org/article/inverse-kinematics-returns-to-godot-4-6/)). Los 7 solvers: `TwoBoneIK3D` y `SplineIK3D` (deterministas, predecibles — ideales para pies/brazos); `FABRIK3D`, `CCDIK3D`, `JacobianIK3D` (iterativos, convergen — para cadenas largas como colas/columnas); más `ChainIK3D` e `IterateIK3D` (base de los iterativos — `FABRIK3D` hereda de `IterateIK3D`). Para mirar (cabeza/ojos): `LookAtModifier3D` (4.4), con `bone_name`/`bone`, `target_node`, `forward_axis`, `use_angle_limitation`, `origin_from` ([LookAtModifier3D.xml](https://github.com/godotengine/godot/blob/master/doc/classes/LookAtModifier3D.xml)). Para colgar armas/props a un hueso: `BoneAttachment3D` (`bone_name` / `bone_idx`), también hijo del `Skeleton3D`.
+**Post-pose / IK — `Skeleton3D` + `SkeletonModifier3D` / `IKModifier3D`.** Los modificadores son hijos del `Skeleton3D` y corren **después** de evaluar el `AnimationTree`, en el orden del árbol de escena. `IKModifier3D` (hereda de `SkeletonModifier3D`) es la base de la suite IK; su única propiedad propia relevante es `mutable_bone_axes` (bool) — controla la mutabilidad de los ejes del hueso; verifica el default en el editor/clase de tu build de 4.6 (cuidado con el bug [#113047](https://github.com/godotengine/godot/issues/113047), errores infinitos por `mutable_bone_axis`) — y gestiona N cadenas vía `setting_count` / `set_setting_count(n)` / `clear_settings()` ([IKModifier3D.xml](https://github.com/godotengine/godot/blob/master/doc/classes/IKModifier3D.xml), [artículo oficial IK 4.6](https://godotengine.org/article/inverse-kinematics-returns-to-godot-4-6/)). Los 7 solvers: `TwoBoneIK3D` y `SplineIK3D` (deterministas, predecibles — ideales para pies/brazos); `FABRIK3D`, `CCDIK3D`, `JacobianIK3D` (iterativos, convergen — para cadenas largas como colas/columnas); más `ChainIK3D` e `IterateIK3D` (base de los iterativos — `FABRIK3D` hereda de `IterateIK3D`). Para mirar (cabeza/ojos): `LookAtModifier3D` (4.4), con `bone_name`/`bone`, `target_node`, `forward_axis`, `use_angle_limitation`, `origin_from` ([LookAtModifier3D.xml](https://github.com/godotengine/godot/blob/master/doc/classes/LookAtModifier3D.xml)). Para colgar armas/props a un hueso: `BoneAttachment3D` (`bone_name` / `bone_idx`), también hijo del `Skeleton3D`.
 
 API real de `TwoBoneIK3D` (por índice, NO propiedades planas): `set_root_bone_name(i, name)`, `set_middle_bone_name(i, name)`, `set_end_bone_name(i, name)`, `set_target_node(i, NodePath)`, `set_pole_node(i, NodePath)`, `set_pole_direction(i, dir)`, más getters `get_target_node(i)`, etc. El número de cadenas se fija con `setting_count`. Hereda `active` de `SkeletonModifier3D` para togglear todo el modificador.
 
@@ -358,12 +358,12 @@ func _physics_process(delta: float) -> void:
 	_update_foot_ik()
 
 func _apply_root_motion(delta: float) -> void:
-	# rotación absoluta vía accumulator (evita el bug incremental #93821/#95688)
-	var rot := tree.get_root_motion_rotation_accumulator()
+	# Patrón canónico: extrae la posición local corrigiendo por el accumulator de
+	# rotación, válido incluso con cross-fade (evita el bug incremental #93821/#95688).
+	var rot_acc := tree.get_root_motion_rotation_accumulator()
 	var pos: Vector3 = tree.get_root_motion_position()  # delta local, no velocidad
-	transform.basis = Basis(rot) * transform.basis.orthonormalized()
-	var motion := transform.basis * pos
-	velocity = motion / delta if delta > 0.0 else Vector3.ZERO
+	var local := (rot_acc.inverse() * quaternion) * pos
+	velocity = (transform.basis * local) / delta if delta > 0.0 else Vector3.ZERO
 
 func _update_foot_ik() -> void:
 	if foot_ray_l.is_colliding():
@@ -399,9 +399,13 @@ public partial class PlayerLocomotion : CharacterBody3D
 
     [Signal] public delegate void AttackStartedEventHandler();
 
-    // En 4.6 los nombres de parámetro/track son StringName. String y StringName
-    // NO autoconvierten (#64171); cachéalos. Tras migrar a 4.6 hay que RECOMPILAR
-    // el ensamblado C# por el cambio String -> StringName en los track names.
+    // En C# los string literales se convierten IMPLÍCITAMENTE a StringName (cast
+    // asignante), por lo que esto compila. El motivo de cachear en `static readonly
+    // StringName` es de RENDIMIENTO: evitar alocar un StringName nuevo por frame (p. ej.
+    // en _PhysicsProcess). El issue #64171 (falta de autoconversión) aplica a GDScript,
+    // no a C#. En 4.6 (GH-110767) las propiedades de NOMBRE de animación de
+    // AnimationPlayer (current_animation, assigned_animation, autoplay, get_queue())
+    // pasaron a StringName: leerlas como `string` rompe a nivel de fuente.
     private static readonly StringName BlendParam = "parameters/Locomotion/blend_position";
     private static readonly StringName AttackState = "attack";
 
@@ -440,11 +444,12 @@ public partial class PlayerLocomotion : CharacterBody3D
 
     private void ApplyRootMotion(float delta)
     {
-        Quaternion rot = _tree.GetRootMotionRotationAccumulator(); // struct por valor
-        Vector3 pos = _tree.GetRootMotionPosition();               // delta local
-        Transform = Transform with { Basis = new Basis(rot) * Transform.Basis.Orthonormalized() };
-        Vector3 motion = Transform.Basis * pos;
-        Velocity = delta > 0f ? motion / delta : Vector3.Zero;
+        // Patrón canónico: corrige la posición local por el accumulator de rotación
+        // (válido con cross-fade; evita el bug incremental #93821 / #95688).
+        Quaternion rotAcc = _tree.GetRootMotionRotationAccumulator(); // struct por valor
+        Vector3 pos = _tree.GetRootMotionPosition();                  // delta local
+        Vector3 local = (rotAcc.Inverse() * Quaternion) * pos;
+        Velocity = delta > 0f ? (Transform.Basis * local) / delta : Vector3.Zero;
     }
 
     private void UpdateFootIk()
@@ -470,12 +475,12 @@ public partial class PlayerLocomotion : CharacterBody3D
 
 ### Nodos/clases 4.6
 
-- `AnimationPlayer` — banco de clips; tracks ahora `StringName`.
+- `AnimationPlayer` — banco de clips; en 4.6 (GH-110767) las propiedades de nombre de animación (`current_animation`, `assigned_animation`, `autoplay`, `get_queue()`) son `StringName`.
 - `AnimationTree` : `AnimationMixer` — `tree_root`, `anim_player`, `advance_expression_base_node`, `callback_mode_process`, `active`; root motion vía `root_motion_track` / `get_root_motion_*()`.
 - `AnimationNodeStateMachine` / `AnimationNodeStateMachinePlayback` — `travel`, `start`, `get_current_node`, `get_travel_path`, `is_playing`.
 - `AnimationNodeBlendSpace2D` — blending 2D triangulado; `parameters/<Nodo>/blend_position`.
 - `Skeleton3D` — esqueleto; contenedor de modificadores.
-- `IKModifier3D` : `SkeletonModifier3D` — base IK; `setting_count`, `mutable_bone_axes`, `clear_settings()`, `reset()`.
+- `IKModifier3D` : `SkeletonModifier3D` — base IK; `setting_count`, `mutable_bone_axes` (verifica su default en tu build; ojo con el bug [#113047](https://github.com/godotengine/godot/issues/113047)), `clear_settings()`, `reset()`.
 - `TwoBoneIK3D` : `IKModifier3D` — determinista; API por índice (`set_root_bone_name`, `set_middle_bone_name`, `set_end_bone_name`, `set_target_node`, `set_pole_node`).
 - `FABRIK3D` : `IterateIK3D` / `CCDIK3D` / `JacobianIK3D` — iterativos.
 - `SplineIK3D`, `ChainIK3D`, `IterateIK3D` — cadenas.
@@ -484,7 +489,7 @@ public partial class PlayerLocomotion : CharacterBody3D
 
 ### Pitfalls
 
-- **`StringName` en track/parameter names (breaking 4.5→4.6)**: recompilar C#; `String` != `StringName`, no autoconvierten ([#64171](https://github.com/godotengine/godot/issues/64171)). Comparaciones literales pueden fallar en silencio.
+- **`StringName` en nombres de animación de `AnimationPlayer` (4.6, GH-110767)**: `current_animation`, `assigned_animation`, `autoplay`, `get_queue()` (ahora `StringName[]`) y la señal `current_animation_changed` pasaron de `String` a `StringName` ("neither binary nor source compatible"); leerlas como `string` en C# rompe a nivel de fuente. Cachear `StringName` en C# es por RENDIMIENTO (evitar alocar por frame), no correctitud; el issue [#64171](https://github.com/godotengine/godot/issues/64171) es de GDScript ([migración a 4.6](https://docs.godotengine.org/en/4.6/tutorials/migrating/upgrading_to_godot_4.6.html)).
 - **API IK por índice, no plana**: `TwoBoneIK3D` NO tiene `target_node` directo; usa `set_target_node(index, path)` sobre `setting_count`. Configura las cadenas en el editor o con `set_setting_count()` antes de los setters ([TwoBoneIK3D.xml](https://github.com/godotengine/godot/blob/master/doc/classes/TwoBoneIK3D.xml)).
 - **Root motion + rotación**: la acumulación incremental con fading rompe la locomoción ([#93821](https://github.com/godotengine/godot/issues/93821), [#95688](https://github.com/godotengine/godot/issues/95688)). Usar `get_root_motion_rotation_accumulator()` y aplicar rotación absoluta.
 - **`get_root_motion_position()` es delta, no velocidad**: orientarlo por el `basis` y dividir por `delta` antes de `move_and_slide()`. Considera `root_motion_local`.
@@ -496,7 +501,7 @@ public partial class PlayerLocomotion : CharacterBody3D
 ### Addon vs construirlo
 
 - **IK**: NO usar addon. Es nativo y de primera clase en 4.6 (suite `IKModifier3D`). La escena de muestra [Inverse Kinematics Example](https://store.godotengine.org/asset/andicraft/inverse-kinematics-example/) sirve solo como referencia de setup, no como dependencia.
-- **State machines de animación**: `AnimationNodeStateMachine` nativo basta para locomoción/combate. Para el **cerebro de IA** (separado de la animación) considerar [LimboAI](https://github.com/godotengine/awesome-godot) (behavior trees + HSM con editor y debugger) o XSM. Regla: animación = `AnimationTree` nativo; IA = LimboAI.
+- **State machines de animación**: `AnimationNodeStateMachine` nativo basta para locomoción/combate. Para el **cerebro de IA** (separado de la animación) considerar [LimboAI](https://github.com/limbonaut/limboai) (behavior trees + HSM con editor y debugger) o XSM. Regla: animación = `AnimationTree` nativo; IA = LimboAI.
 - **Retargeting Mixamo**: nativo (`BoneMap` + `SkeletonProfileHumanoid`) funciona; el plugin [RaidTheory/Godot-Mixamo-Animation-Retargeter](https://github.com/RaidTheory/Godot-Mixamo-Animation-Retargeter) automatiza el bone map para flujos masivos de clips — innecesario para pocos.
 
 **Veredicto ponytail:** No construyas un sistema de animación, un blend tree ni un solver IK propios, ni un wrapper de "propiedades planas" sobre `TwoBoneIK3D`. Reutiliza `AnimationTree` + `AnimationNodeStateMachine` + `AnimationNodeBlendSpace2D` para control y blending, root motion nativo (`get_root_motion_*` con el accumulator), y la suite `IKModifier3D` (TwoBoneIK3D determinista para pies/brazos, LookAtModifier3D para la cabeza, FABRIK3D/CCDIK3D para colas) como hijos del `Skeleton3D`. Para IA, delega en LimboAI en vez de mezclar gameplay con animación.
@@ -514,11 +519,11 @@ Reparto de responsabilidades (terminología GDQuest):
 - **Hitbox** = la parte que *inflige* daño (arma, puño, proyectil). `Area3D` + `CollisionShape3D` hijo.
 - **Hurtbox** = la parte que *recibe* daño (cuerpo del personaje). También `Area3D` + `CollisionShape3D`.
 
-**Deja que las capas de colisión hagan el chequeo de tipos.** Si configuras bien `collision_layer`/`collision_mask`, solo un lado emite la señal y te ahorras `is`/casts en runtime, evitando dobles disparos y fuego amigo sin código ([dredyson](https://dredyson.com/advanced-area3d-hitbox-optimization-how-i-mastered-duplicate-hit-prevention-with-professional-collision-detection-techniques-complete-configuration-guide-for-godot-4-6-2/)):
+**Deja que las capas de colisión hagan el chequeo de tipos.** Si configuras bien `collision_layer`/`collision_mask`, solo un lado emite la señal y te ahorras `is`/casts en runtime, evitando dobles disparos y fuego amigo sin código ([class_area3d](https://docs.godotengine.org/en/4.6/classes/class_area3d.html)):
 
-- Hitbox del jugador: `collision_layer = capa "player_hitbox"`, `collision_mask = 0`.
-- Hurtbox del enemigo: `collision_layer = capa "enemy_hurtbox"`, `collision_mask = "player_hitbox"`.
-- Así solo la hurtbox emite `area_entered`; el hitbox ni escucha.
+- Hitbox del jugador: `collision_layer = capa "player_hitbox"`, `collision_mask = capa "enemy_hurtbox"`, `monitoring = true` (es el que escucha).
+- Hurtbox del enemigo: `collision_layer = capa "enemy_hurtbox"`, `collision_mask = 0`, `monitorable = true` (se deja detectar, no escucha).
+- Así solo el hitbox emite `area_entered` y llama `take_damage`; la hurtbox solo se deja detectar. El lado que escucha SIEMPRE necesita la capa del otro en su `mask`.
 
 Clases y firmas (Godot 4.6, verificadas contra `class_area3d`):
 
@@ -570,7 +575,10 @@ func end_attack() -> void:
     $HitShape.disabled = true
 
 func _on_area_entered(area: Area3D) -> void:
-    var victim: Node = area.owner
+    # owner solo apunta a la víctima si la hurtbox vive dentro de una escena
+    # instanciada cuyo root lleva take_damage; si se añadió en runtime sin owner,
+    # area.owner es null. Fallback robusto al padre directo.
+    var victim: Node = area.owner if area.owner != null else area.get_parent()
     if victim == null:
         return
     var id := victim.get_instance_id()
@@ -578,7 +586,10 @@ func _on_area_entered(area: Area3D) -> void:
         return
     _already_hit[id] = true
     if victim.has_method("take_damage"):
-        victim.take_damage(damage_info)
+        # source es transitorio por golpe: duplica para no mutar el .tres compartido.
+        var info := damage_info.duplicate() as DamageInfo
+        info.source = owner as Node3D
+        victim.take_damage(info)
 ```
 
 Receptor con i-frames y knockback sobre `CharacterBody3D`:
@@ -599,6 +610,7 @@ var _health: float
 
 func _ready() -> void:
     _health = max_health
+    _iframes.one_shot = true          # i-frames de un solo disparo; no auto-repite
 
 func take_damage(info: DamageInfo) -> void:
     if not _iframes.is_stopped():
@@ -629,6 +641,8 @@ func fire_ray(from: Vector3, to: Vector3, info: DamageInfo) -> void:
     var space := get_world_3d().direct_space_state
     var q := PhysicsRayQueryParameters3D.create(from, to)
     q.collision_mask = HURTBOX_LAYER
+    q.collide_with_areas = true   # las hurtboxes son Area3D; por defecto es false
+    q.collide_with_bodies = false # solo nos interesan las areas, saltamos cuerpos
     var hit: Dictionary = space.intersect_ray(q)  # {} si no golpea nada
     if hit.is_empty():
         return
@@ -702,7 +716,7 @@ public partial class HitBox3D : Area3D
 Gotchas C#:
 
 - `AreaEntered` solo se emite si `Monitoring = true` (error frecuente de principiantes en el lado que escucha).
-- **Breaking 4.5→4.6:** los nombres de pista de `AnimationPlayer` pasaron de `String` a `StringName`. Si tu combate dispara hitboxes vía Call Method Track, **recompila el proyecto C#** o esas llamadas pueden romperse silenciosamente.
+- **Gotcha 4.6 (C#):** al migrar de 4.5, varias propiedades de *nombre de animación* de `AnimationPlayer` pasaron de `String` a `StringName` (GH-110767): `current_animation`, `assigned_animation`, `autoplay`, `get_queue()` y el parámetro de la señal `current_animation_changed`. Pasar un `string` literal a métodos que toman `StringName` sigue compilando (conversión implícita), pero **leer** esas propiedades como `string` rompe a nivel de fuente. Relevante si disparas ataques desde una Call Method Track.
 - Usa `area.AreaEntered += OnAreaEntered;` o `Connect(Area3D.SignalName.AreaEntered, Callable.From<Area3D>(OnAreaEntered))`. Nunca `as` sin null-check.
 
 ### Nodos/clases 4.6
@@ -719,7 +733,7 @@ Gotchas C#:
 
 ### Pitfalls
 
-- **Deshabilita el `CollisionShape3D`, NO el `Area3D`.** Al desactivar `CollisionShape3D.disabled` la engine lo retira de los tests de solapamiento; si tocas `monitorable`/`monitoring` del Area, el nodo sigue en el mundo físico y solo deja de reportar (con deferimiento que crea race conditions) ([dredyson](https://dredyson.com/fix-duplicate-hit-detection-in-godot-4-6-2-area3d-hurt-hit-boxes-a-beginners-step-by-step-guide-to-resolving-race-conditions-collisionshape3d-vs-area3d-disabling-and-blacklist-dictionary-workarou/)).
+- **Deshabilita el `CollisionShape3D`, NO el `Area3D`.** Al desactivar `CollisionShape3D.disabled` la engine lo retira de los tests de solapamiento; si tocas `monitorable`/`monitoring` del Area, el nodo sigue en el mundo físico y solo deja de reportar (las señales de Area3D son diferidas y `get_overlapping_areas` se actualiza una vez por paso físico, de ahí las race conditions) ([class_area3d](https://docs.godotengine.org/en/4.6/classes/class_area3d.html), [issue #53997](https://github.com/godotengine/godot/issues/53997)).
 - **Doble golpe (race condition).** Un hitbox que solapa varias hurtboxes en el mismo frame dispara `area_entered` por cada una; con hurtboxes por hueso, un puñetazo genera 4-6 señales. Solución: diccionario blacklist por swing, **limpiado en `start_attack()` antes de habilitar el shape**, con clave = `instance_id` de la víctima.
 - **Jolt (default en 4.6) + Area3D — issues abiertos reales:** [#106482](https://github.com/godotengine/godot/issues/106482) reporta gran impacto de rendimiento con muchos `Area3D` solapados **aunque `monitorable = false`**, porque `JoltArea3D` fija el motion_type del sensor a kinematic (hay [PR #106490](https://github.com/godotengine/godot/pull/106490) de mihe en curso); [#118047](https://github.com/godotengine/godot/issues/118047) confirma lag con Area3D solapadas en Jolt; [#109721](https://github.com/godotengine/godot/issues/109721) reporta `body_exited` inconsistente tras reposicionar CharacterBody3D. Implicación RPG: **no dejes decenas de hurtboxes activas permanentemente**; desactiva las de enemigos fuera de pantalla. Si ves comportamiento raro, prueba "Godot Physics" para aislar el bug ([#88441](https://github.com/godotengine/godot/issues/88441)).
 - **`get_overlapping_areas()/bodies()` van un frame desfasados** respecto a las señales y no se actualizan en el instante del `area_exited` ([proposal #8610](https://github.com/godotengine/godot-proposals/issues/8610)). No los uses para decidir el golpe en el frame del exit.
@@ -728,7 +742,7 @@ Gotchas C#:
 
 ### Addon vs construirlo
 
-**Addon mantenido (4.x):** *Health, HitBoxes, HurtBoxes and HitScans* de cluttered-code, MIT, 2D y 3D. Provee `HurtBox3D`, `HitBox3D`, `HitScan3D` (extiende `RayCast3D`) y un componente `Health`. Versión actual v5.0.3 (mayo 2026); en v5 los componentes base llevan prefijo "Basic" y se añadieron variantes con múltiples tipos de daño y modificadores — **migra a v4.4.0 antes de saltar a v5.0.0** por los cambios de nombres ([GitHub](https://github.com/cluttered-code/godot-health-hitbox-hurtbox), [Asset Library](https://godotengine.org/asset-library/asset/3636)).
+**Addon mantenido (4.x):** *Health, HitBoxes, HurtBoxes and HitScans* de cluttered-code, MIT, 2D y 3D. Provee `HurtBox3D`, `HitBox3D`, `HitScan3D` (extiende `RayCast3D`) y un componente `Health`. Versión actual v5.0.3 (agosto 2025); en v5 los componentes base llevan prefijo "Basic" y cambiaron nombres, además de variantes con múltiples tipos de daño y modificadores — **si vienes de v4.x, lee el CHANGELOG/wiki antes de actualizar a v5** por esos cambios de nombres ([GitHub](https://github.com/cluttered-code/godot-health-hitbox-hurtbox), [Godot Asset Store](https://store.godotengine.org/asset/cluttered-code/health-hitboxes-hurtboxes-hitscans/)).
 
 - **Usa el addon** si tu combate es estándar (golpe → daño → curación) y quieres prototipar rápido. Cubre melee, hurt/hit y hitscan listos.
 - **Constrúyelo tú** (es ~150 líneas) si necesitas `DamageInfo` rico (tipo, crítico, status), reglas de facción/fuego amigo, knockback con curvas, escalado por stats o integración con un sistema de turnos propio. El patrón es tan ligero que para mecánicas únicas rodar el tuyo da más control y evita atarte a los cambios de API del addon (que ya rompió nombres en v5). Punto medio: estudia el [demo de GDQuest](https://github.com/gdquest-demos/godot-4-hitbox-hurtbox) y el [godot-open-rpg](https://github.com/gdquest-demos/godot-open-rpg), y escribe tus propios `HitBox3D`/`HurtBox3D`/`HealthComponent`.
@@ -747,7 +761,7 @@ Las piezas nativas que cubren el 100% del dominio:
 - **`signal` en el propio `Resource`** — un recurso puede declarar `signal stat_changed(name: StringName)` y emitirlo desde sus setters. **No dependas de la señal `changed` heredada**: históricamente no se emite de forma fiable al mutar propiedades por código (Issue [#30179](https://github.com/godotengine/godot/issues/30179)); emite tus propias señales.
 - **`Curve`** (Resource editable en el Inspector) para **curvas de crecimiento de stats** (HP/ATK por nivel). Firmas 4.6: `sample(offset: float) -> float`, `sample_baked(offset: float) -> float`, `bake()`, propiedad `bake_resolution`, rangos `min_value`/`max_value` (eje Y) y `min_domain`/`max_domain`. El eje X normalizado por defecto es `[0,1]`, así que normalizas `level/max_level` antes de samplear ([class_curve](https://docs.godotengine.org/en/4.6/classes/class_curve.html)).
 - **Fórmula (no `Curve`) para umbrales de XP** — `xp_for(level)` exponencial/poly. `Curve` no es una tabla por-nivel infinita; usarla así es un error frecuente ([hilo foro](https://forum.godotengine.org/t/sample-curve-beyond-1-infinite-curve-sample/40106)).
-- **`Dictionary[StringName, float]`** (diccionario tipado 4.6) para resistencias: claves `StringName` (rápidas de comparar, casan con nombres de tipo de daño), valores `float` ([class_dictionary](https://docs.godotengine.org/en/4.6/classes/class_dictionary.html)).
+- **`Dictionary[StringName, float]`** (diccionario tipado 4.6) para resistencias: claves `StringName` (rápidas de comparar, casan con nombres de tipo de daño), valores `float`. Ojo: el tipado del valor solo aplica a `[]` y al `for`; métodos como `get()` siguen devolviendo `Variant`, así que anota el tipo al enlazar (`var resist: float = dict.get(...)`) ([class_dictionary](https://docs.godotengine.org/en/4.6/classes/class_dictionary.html)).
 - **Autoload + bus de señales** (Observer) para `xp_gained` / `leveled_up` / `xp_changed`, desacoplando la lógica de stats de la UI — exactamente lo que hace GDQuest.
 
 ### GDScript
@@ -832,7 +846,7 @@ func apply_damage(amount: float, type: StringName) -> float:
 
 ### C# (.NET 8)
 
-Reglas para que un `Resource` aparezca en "New Resource" y se serialice: clase **`partial`**, archivo propio con nombre = nombre de clase (case-sensitive), hereda de `Resource`, marcada `[GlobalClass]` ([C# global classes](https://docs.godotengine.org/en/stable/tutorials/scripting/c_sharp/c_sharp_global_classes.html)).
+Reglas para que un `Resource` aparezca en "New Resource" y se serialice: clase **`partial`**, archivo propio con nombre = nombre de clase (case-sensitive), hereda de `Resource`, marcada `[GlobalClass]` ([C# global classes](https://docs.godotengine.org/en/4.6/tutorials/scripting/c_sharp/c_sharp_global_classes.html)).
 
 ```csharp
 using Godot;
@@ -873,9 +887,9 @@ public partial class UnitStats : Resource
 ```
 
 Gotchas C# confirmados:
-- Los parámetros de `[Signal]` y los miembros `[Export]` deben ser **Variant-compatibles** (marshalling C#/C++); el diagnóstico GD0202 salta si no lo son ([c_sharp_differences](https://github.com/godotengine/godot-docs/blob/master/tutorials/scripting/c_sharp/c_sharp_differences.rst)).
+- Los parámetros de `[Signal]` y los miembros `[Export]` deben ser **Variant-compatibles** (marshalling C#/C++); el diagnóstico GD0202 salta si no lo son ([GD0202](https://docs.godotengine.org/en/4.6/tutorials/scripting/c_sharp/diagnostics/GD0202.html)).
 - Conectar señales con `+=` **no se autodesconecta**: o haces `-=` manual, o usas `Connect()` (que se limpia al liberar el nodo). Emitir señales custom externas dio errores documentados en Issue [#82268](https://github.com/godotengine/godot/issues/82268); prefiere `EmitSignal(SignalName.X, ...)`.
-- **Breaking 4.5→4.6**: los nombres de tracks de `AnimationPlayer` pasaron de `String` a `StringName`. Si disparas animaciones de level-up/daño por nombre de track, **recompila el proyecto C#** o fallará el marshalling.
+- **Gotcha 4.6 (C#)**: al migrar de 4.5, propiedades de *nombre de animación* de `AnimationPlayer` (`current_animation`, `assigned_animation`, `autoplay`, `get_queue()`, señal `current_animation_changed`) pasaron de `String` a `StringName` (GH-110767). Un `string` literal sigue compilando por conversión implícita; **leer** esas propiedades como `string` rompe a nivel de fuente.
 
 ### Nodos/clases 4.6
 
@@ -918,7 +932,7 @@ Un inventario en Godot 4.6 no es una "estructura de datos" que tengas que invent
 
 **Stacking y modifiers = `Dictionary[StringName, int]`.** La sintaxis de diccionario tipado confirmada en la [doc 4.6 de Dictionary](https://docs.godotengine.org/en/4.6/classes/class_dictionary.html) es `Dictionary[K, V]`. Para mapear `id -> cantidad` o `stat -> bonus`, `Dictionary[StringName, int]` da chequeo de tipos en runtime y claves interned (comparación por puntero, ideal para IDs comparados a menudo). Clave práctica: **el acceso por punto (`dict.key`) no es fiable con claves `StringName`** — es azúcar para claves `String` — usa siempre indexación `dict[&"key"]` ([forum](https://forum.godotengine.org/t/is-dictionary-dot-syntax-my-dictionary-my-key-compatible-with-stringname-keys/104092)).
 
-**UI = drag-and-drop nativo de `Control`.** Los tres métodos virtuales (firmas confirmadas en la [doc de Control](https://docs.godotengine.org/en/stable/classes/class_control.html)):
+**UI = drag-and-drop nativo de `Control`.** Los tres métodos virtuales (firmas confirmadas en la [doc de Control](https://docs.godotengine.org/en/4.6/classes/class_control.html)):
 
 ```gdscript
 func _get_drag_data(at_position: Vector2) -> Variant
@@ -959,7 +973,10 @@ extends Resource
 
 signal changed
 
-# id -> cantidad para apilables; los no apilables van a slots aparte.
+# id -> cantidad. Nota: este ejemplo mínimo apila también los no-apilables por
+# simplicidad (un único contador por id). Para estado por instancia (durabilidad,
+# encantamientos) guarda copias duplicate(true) en una colección aparte (Array[ItemData]
+# o claves únicas por instancia), porque varias instancias colisionarían bajo la misma id.
 @export var stacks: Dictionary[StringName, int] = {}
 @export var items: Dictionary[StringName, ItemData] = {}  # id -> blueprint
 
@@ -972,6 +989,7 @@ func add_item(item: ItemData, amount: int = 1) -> int:
         stacks[item.id] = allowed
         changed.emit()
         return added
+    # No-apilable: en este ejemplo se cuenta igual por id (simplificación intencional).
     stacks[item.id] = stacks.get(item.id, 0) + amount
     changed.emit()
     return amount
@@ -1031,7 +1049,11 @@ func _drop_data(_at_position: Vector2, data: Variant) -> void:
 
 ```gdscript
 # Copia única cuando el item tiene estado mutable (durabilidad, encantamientos).
-# Los Resource se comparten por referencia: duplicate(true) = deep copy.
+# Los Resource se comparten por referencia: duplicate(true) hace deep copy de las
+# propiedades y de los subrecursos referenciados DIRECTAMENTE, PERO NO duplica los
+# subrecursos guardados dentro de un Array o un Dictionary (issues #74918 / #82348).
+# Si metes Resources mutables dentro de un Dictionary/Array, necesitas un deep_clone()
+# manual o duplicar cada subrecurso explícitamente.
 var unique := item_template.duplicate(true)
 ```
 
@@ -1102,8 +1124,13 @@ public partial class InventorySlot : PanelContainer
 
     public override bool _CanDropData(Vector2 atPosition, Variant data)
     {
+        // Variant.As<Dictionary>() NO devuelve null si el tipo no coincide:
+        // devuelve un Dictionary vacío. Valida el tipo con VariantType para que
+        // el guard sea tan robusto como `data is Dictionary` en GDScript.
+        if (data.VariantType != Variant.Type.Dictionary)
+            return false;
         var dict = data.As<Dictionary>();
-        if (dict == null || !dict.ContainsKey("item"))
+        if (!dict.ContainsKey("item"))
             return false;
 
         var dragged = dict["item"].As<ItemData>();
@@ -1125,20 +1152,20 @@ Notas C# idiomáticas (.NET 8):
 - `[GlobalClass]` hace que `ItemData` aparezca en el diálogo *New Resource*, equivalente a `class_name` en GDScript.
 - Usa **`Godot.Collections.Dictionary`/`Array`**, no las de `System.Collections.Generic`, para que crucen el límite engine/Variant. Leer datos arrastrados con `.As<T>()`.
 - `_GetDragData` devuelve `Variant` no anulable: para "sin datos" devuelve `default` (no `null`). Esto fue causa del [issue #78507](https://github.com/godotengine/godot/issues/78507).
-- **Gotcha 4.5→4.6:** los nombres de pista de `AnimationPlayer` pasaron de `String` a `StringName`. Si tu UI de inventario dispara animaciones por nombre, **recompila el ensamblado C#** tras actualizar — el cambio de tipo no es transparente para código ya compilado.
+- **Gotcha 4.6 (C#):** al migrar de 4.5, propiedades de *nombre de animación* de `AnimationPlayer` (`current_animation`, `assigned_animation`, `autoplay`, `get_queue()` → `StringName[]`, señal `current_animation_changed`) pasaron de `String` a `StringName` (GH-110767). Un `string` literal sigue compilando por conversión implícita; **leer** esas propiedades como `string` rompe a nivel de fuente.
 
 ### Nodos/clases 4.6
 
 - **`Resource`** + **`@export`** / **`[GlobalClass]`** — items como datos (`.tres`).
 - **`Dictionary[StringName, int]`** — stacking y modifiers tipados ([doc 4.6](https://docs.godotengine.org/en/4.6/classes/class_dictionary.html)).
-- **`Control`** + `_get_drag_data` / `_can_drop_data` / `_drop_data` / `set_drag_preview` — drag-and-drop nativo ([doc Control](https://docs.godotengine.org/en/stable/classes/class_control.html)).
+- **`Control`** + `_get_drag_data` / `_can_drop_data` / `_drop_data` / `set_drag_preview` — drag-and-drop nativo ([doc Control](https://docs.godotengine.org/en/4.6/classes/class_control.html)).
 - **`GridContainer`** / **`PanelContainer`** / **`TextureRect`** — la rejilla de slots y el icono; sin código de layout custom.
 - **`ResourceLoader.load`** / `preload` / **`DirAccess`** — cargar la BD de items.
 - **`signal`** / `[Signal] delegate` — `changed` para refrescar UI sin polling.
 
 ### Pitfalls
 
-- **Resources compartidos por defecto (la trampa #1).** 50 cofres apuntando al mismo `.tres` comparten estado. Si el item tiene estado mutable, `duplicate(true)` (deep) — `duplicate()` simple no copia subrecursos anidados ([issue #37222](https://github.com/godotengine/godot/issues/37222), [forum](https://forum.godotengine.org/t/duplicate-not-making-a-unique-copy-of-my-custom-resource/46404)). Pero si el item es inmutable (espada genérica), **NO dupliques**: guarda la referencia + cantidad y ya.
+- **Resources compartidos por defecto (la trampa #1).** 50 cofres apuntando al mismo `.tres` comparten estado. Si el item tiene estado mutable, `duplicate(true)` (deep) — pero ojo: `duplicate(true)` copia las propiedades y los subrecursos referenciados **directamente**, y NO los subrecursos guardados dentro de un `Array`/`Dictionary` (issues [#74918](https://github.com/godotengine/godot/issues/74918) / #82348); `duplicate()` simple tampoco copia subrecursos anidados ([issue #37222](https://github.com/godotengine/godot/issues/37222), [forum](https://forum.godotengine.org/t/duplicate-not-making-a-unique-copy-of-my-custom-resource/46404)). Si guardas Resources mutables dentro de colecciones, clónalos a mano. Pero si el item es inmutable (espada genérica), **NO dupliques**: guarda la referencia + cantidad y ya.
 - **`resource_local_to_scene`** no siempre instancia una copia local fiable al duplicar instancias de escena ([issue #45350](https://github.com/godotengine/godot/issues/45350)); verifica que cada entidad con stats mutables tenga su propia copia.
 - **`dict.key` con claves `StringName`** no es fiable — usa `dict[&"key"]` siempre.
 - **No confundir blueprint con instancia.** Mutar el `.tres` muta todos los items de esa plantilla. El inventario referencia el blueprint; el estado va en la instancia/cantidad.
@@ -1219,6 +1246,9 @@ func choose(choice: DialogueChoice) -> void:
 func continue_line(line: DialogueLine) -> void:
     _advance(line.next_line)
 
+func set_flag(key: StringName, value: bool = true) -> void:
+    flags[key] = value
+
 func _filter(choices: Array[DialogueChoice]) -> Array[DialogueChoice]:
     var out: Array[DialogueChoice] = []
     for c in choices:
@@ -1232,13 +1262,18 @@ func _eval(condition: String) -> bool:
         push_warning("Condición inválida: %s" % condition)
         return false
     var result: Variant = expr.execute([flags], self)
-    return not expr.has_execute_failed() and bool(result)
+    if expr.has_execute_failed():
+        push_warning("Fallo al evaluar: %s" % condition)
+        return false
+    return bool(result)
 ```
 
 Quests con el mismo patrón, actualizadas por señal:
 
+Cada `class_name` global vive en **su propio archivo** (GDScript permite un solo `class_name` por script):
+
 ```gdscript
-# quest.gd / quest_objective.gd
+# quest_objective.gd
 class_name QuestObjective extends Resource
 enum Kind { KILL, COLLECT, TALK, REACH }
 @export var kind: Kind = Kind.KILL
@@ -1246,7 +1281,10 @@ enum Kind { KILL, COLLECT, TALK, REACH }
 @export var required: int = 1
 @export var progress: int = 0
 func is_done() -> bool: return progress >= required
+```
 
+```gdscript
+# quest.gd
 class_name Quest extends Resource
 @export var id: StringName
 @export var title: String
@@ -1326,7 +1364,9 @@ public override void _Ready()
 private void OnLineDisplayed(DialogueLine line) { /* pintar UI */ }
 ```
 
-**Gotcha 4.6 (String → StringName)**: en 4.6 los nombres de tracks de `AnimationPlayer` pasaron de `String` a `StringName`. Si tus diálogos disparan animaciones por nombre (`player.Play("talk")`), **recompila el ensamblado C#** tras subir de 4.5; pasa los nombres como `StringName` (`new StringName("talk")` o el literal `&"talk"` en GDScript) para evitar conversiones implícitas costosas. Para conectar señales a métodos GDScript snake_case desde C#, sigue usando `Connect("line_displayed", Callable.From(...))`; para señales entre código C#, prefiere siempre `+=` o `EmitSignal(SignalName.X, ...)` y evita `Callable.Bind`/lambdas con args, históricamente conflictivos ([issue #71895](https://github.com/godotengine/godot/issues/71895)).
+`[GlobalClass]` va en las clases de datos `Resource` (`DialogueLine`, `DialogueChoice`, `Quest`...) para que aparezcan bajo *New Resource* en el editor; los `Node` manager de autoload **no** lo necesitan, porque se registran en *Project Settings → Autoload* y se instancian por ahí, no se crean desde el menú de Resources.
+
+**Gotcha 4.6 (String → StringName)**: en 4.6 varias propiedades de *nombre de animación* de `AnimationPlayer` (`current_animation`, `assigned_animation`, `autoplay`, `get_queue()`, señal `current_animation_changed`) pasaron de `String` a `StringName` (GH-110767). Si tus diálogos disparan animaciones por nombre (`player.Play("talk")`), **recompila el ensamblado C#** tras subir de 4.5; pasa los nombres como `StringName` (`new StringName("talk")` o el literal `&"talk"` en GDScript) para evitar conversiones implícitas costosas. Para conectar señales a métodos GDScript snake_case desde C#, sigue usando `Connect("line_displayed", Callable.From(...))`; para señales entre código C#, prefiere siempre `+=` o `EmitSignal(SignalName.X, ...)` y evita `Callable.Bind`/lambdas con args, históricamente conflictivos ([issue #71895](https://github.com/godotengine/godot/issues/71895)).
 
 ### Nodos/clases 4.6
 
@@ -1366,7 +1406,7 @@ El patrón `Resource` + señales + autoload son ~150 líneas bajo tu control tot
 
 La regla de oro de este dominio: **la navegación no se programa, se configura**. Godot 4.6 trae una pila de navegación 3D completa (servidor + nodos agente + avoidance RVO) que cubre patrol/chase/attack sin una sola línea de A\* propio. Lo único que vale la pena escribir a mano es la máquina de estados de comportamiento (y a veces ni eso). Todo lo demás es reusar nodos nativos.
 
-> Nota de versión: `NavigationServer3D` sigue marcado como **experimental** en los docs de 4.6 ("may be changed or removed in future versions") y no recibió rediseño en 4.6 respecto a 4.4/4.5. La API de alto nivel (`NavigationAgent3D`) es estable en la práctica. 4.6.1 trajo fixes de navegación: `map_get_closest_point_normal` ahora devuelve un valor normalizado y hornear navmesh de colliders de `GridMap` es más rápido ([release notes 4.6.1](https://godotengine.org/article/maintenance-release-godot-4-6-1/)).
+> Nota de versión: `NavigationServer3D` sigue marcado como **experimental** en los docs de 4.6 ("may be changed or removed in future versions") y no recibió rediseño en 4.6 respecto a 4.4/4.5. La API de alto nivel (`NavigationAgent3D`) es estable en la práctica. La 4.6.1 incluyó correcciones de mantenimiento; consultá el changelog interactivo para los detalles de navegación ([release notes 4.6.1](https://godotengine.org/article/maintenance-release-godot-4-6-1/)).
 
 ### Enfoque nativo recomendado
 
@@ -1374,7 +1414,7 @@ La escena de un enemigo navegable se arma con estos nodos, ninguno custom:
 
 - **`NavigationRegion3D`** — contiene un recurso **`NavigationMesh`**. Se hornea con el botón "Bake NavMesh" del editor o por código con `bake_navigation_mesh()`. Colecciona geometría de hijos según `geometry/parsed_geometry_type`. Ajusta `Agents/Radius` y `Cell Size` del `NavigationMesh` si los agentes se atascan en paredes ([intro nav 3D](https://docs.godotengine.org/en/latest/tutorials/navigation/navigation_introduction_3d.html), [navmeshes](https://docs.godotengine.org/en/latest/tutorials/navigation/navigation_using_navigationmeshes.html)).
 - **`CharacterBody3D`** — raíz del enemigo. Es el nodo correcto para un personaje cinemático con gravedad manual y `move_and_slide()`.
-- **`NavigationAgent3D`** (hijo del `CharacterBody3D`) — el cerebro de pathfinding. API clave verificada en docs stable ([NavigationAgent3D](https://docs.godotengine.org/en/stable/classes/class_navigationagent3d.html)):
+- **`NavigationAgent3D`** (hijo del `CharacterBody3D`) — el cerebro de pathfinding. API clave verificada en docs 4.6 ([NavigationAgent3D](https://docs.godotengine.org/en/4.6/classes/class_navigationagent3d.html)):
   - `target_position: Vector3` — destino. Tras asignarlo hay que llamar `get_next_path_position()` **una vez por frame físico** para que el agente actualice su estado interno de path.
   - `get_next_path_position() -> Vector3` — siguiente waypoint.
   - `is_navigation_finished() -> bool` — guarda principal antes de mover.
@@ -1383,8 +1423,8 @@ La escena de un enemigo navegable se arma con estos nodos, ninguno custom:
   - Señales: `velocity_computed(safe_velocity: Vector3)`, `target_reached`, `navigation_finished`, `waypoint_reached`.
   - Avoidance: `avoidance_enabled`, `radius`, `neighbor_distance`, `max_neighbors`, `time_horizon_agents`, `max_speed`.
 - **`Timer`** — repathing periódico (recalcular `target_position` cada ~0.2–0.5 s, no cada frame). Reusar el nodo `Timer` evita escribir un acumulador a mano.
-- **`NavigationObstacle3D`** (opcional) — obstáculos dinámicos. **Limitación documentada:** solo afecta el *avoidance local*, NO replanifica el path global; los agentes no rodean obstáculos móviles ([obstacles](https://docs.godotengine.org/en/stable/classes/class_navigationobstacle3d.html)).
-- **`NavigationServer3D`** (capa baja, sin nodo agente) — `map_get_path(map, origin, target, optimize, navigation_layers=1) -> PackedVector3Array`. Útil para previsualizar rutas. Devuelve array **vacío** si no hay ruta: guardar siempre con `if not path.is_empty()` ([NavigationServer3D](https://docs.godotengine.org/en/stable/classes/class_navigationserver3d.html)).
+- **`NavigationObstacle3D`** (opcional) — obstáculos dinámicos. **Limitación documentada:** solo afecta el *avoidance local*, NO replanifica el path global; los agentes no rodean obstáculos móviles ([obstacles](https://docs.godotengine.org/en/4.6/classes/class_navigationobstacle3d.html)).
+- **`NavigationServer3D`** (capa baja, sin nodo agente) — `map_get_path(map, origin, target, optimize, navigation_layers=1) -> PackedVector3Array`. Útil para previsualizar rutas. Devuelve array **vacío** si no hay ruta: guardar siempre con `if not path.is_empty()` ([NavigationServer3D](https://docs.godotengine.org/en/4.6/classes/class_navigationserver3d.html)).
 
 El flujo de avoidance RVO es: fijas `set_velocity(deseada)` → el servidor calcula `safe_velocity` → emite `velocity_computed` → en ese callback aplicas el movimiento real con `move_and_slide()` ([usando agentes](https://docs.godotengine.org/en/latest/tutorials/navigation/navigation_using_navigationagents.html)).
 
@@ -1419,7 +1459,10 @@ func _on_repath() -> void:
 	_refresh_target()
 
 func _refresh_target() -> void:
-	if target and _agent.is_target_reachable():
+	# Fijar SIEMPRE el target. is_target_reachable() mide contra el path ya
+	# computado (el target anterior); usarla como guarda aquí crea un deadlock
+	# huevo-gallina (devuelve false en la primera llamada y el enemigo no arranca).
+	if target:
 		_agent.target_position = target.global_position
 
 func _physics_process(delta: float) -> void:
@@ -1447,7 +1490,7 @@ enum State { IDLE, PATROL, CHASE, ATTACK }
 
 @export var state: State = State.PATROL
 
-# Tabla de transiciones legibles para depurar (Dictionary tipado 4.6).
+# Tabla de transiciones legibles para depurar (Dictionary tipado, desde 4.4).
 var _state_names: Dictionary[State, StringName] = {
 	State.IDLE: &"idle",
 	State.PATROL: &"patrol",
@@ -1471,16 +1514,23 @@ func _ready() -> void:
 	_agent.velocity_computed.connect(_on_safe_velocity)
 
 func _physics_process(delta: float) -> void:
+	# Gravedad aparte: el avoidance 2D (use_3d_avoidance == false, por defecto)
+	# ignora el eje Y, así que NO la metemos por set_velocity().
+	if not is_on_floor():
+		velocity.y -= gravity * delta
 	if _agent.is_navigation_finished():
+		move_and_slide()
 		return
 	var next: Vector3 = _agent.get_next_path_position()
 	var desired: Vector3 = global_position.direction_to(next) * speed
-	desired.y = velocity.y - gravity * delta       # gravedad ANTES del avoidance
 	_agent.set_velocity(desired)                   # NO mover aquí; esperar señal
 
 func _on_safe_velocity(safe_velocity: Vector3) -> void:
-	# Bug #108252: el avoidance descarta la Y al terminar la nav. Reaplicar.
-	velocity = safe_velocity
+	# El avoidance 2D devuelve safe_velocity.y == 0; si hiciéramos
+	# velocity = safe_velocity mataríamos la gravedad cada frame (bug #108252
+	# la pone en 0 también al terminar la nav). Reaplicamos solo x/z.
+	velocity.x = safe_velocity.x
+	velocity.z = safe_velocity.z
 	move_and_slide()
 ```
 
@@ -1520,7 +1570,9 @@ public partial class EnemyChaser : CharacterBody3D
 
     private void RefreshTarget()
     {
-        if (Target != null && _agent.IsTargetReachable())
+        // Fijar SIEMPRE el target. IsTargetReachable() mide contra el path ya
+        // computado (deadlock huevo-gallina si se usa como guarda aquí).
+        if (Target != null)
             _agent.TargetPosition = Target.GlobalPosition; // PascalCase
     }
 
@@ -1552,7 +1604,7 @@ public partial class EnemyChaser : CharacterBody3D
 
 Para avoidance, la señal se conecta como evento: `_agent.VelocityComputed += OnSafeVelocity;` con firma `private void OnSafeVelocity(Vector3 safeVelocity)`.
 
-**Gotcha 4.6 obligatorio en C#:** el cambio de track names de `String` a `StringName` en `AnimationPlayer` exige **recompilar el ensamblado C#** al migrar de 4.5; los nombres de tracks/animaciones que pasabas como `string` siguen funcionando, pero hay que recompilar para que el binding resuelva bien.
+**Gotcha 4.6 (C#):** al migrar de 4.5, propiedades de *nombre de animación* de `AnimationPlayer` (`current_animation`, `assigned_animation`, `autoplay`, `get_queue()`, señal `current_animation_changed`) pasaron de `String` a `StringName` (GH-110767). Pasar un `string` literal sigue compilando por conversión implícita; **leer** esas propiedades como `string` rompe a nivel de fuente.
 
 ### Nodos/clases 4.6
 
@@ -1603,12 +1655,12 @@ La frase que tienes que tatuarte: **`Resource` para datos que crea el diseñador
 
 ### Enfoque nativo recomendado
 
-Clases 4.6 implicadas (sin cambios de API respecto a 4.5; las páginas `class_*` son `stable`/`latest`):
+Clases 4.6 implicadas (sin cambios de API respecto a 4.5; enlaces a las páginas `class_*` versionadas en `/en/4.6/`):
 
-- **`ConfigFile`** — settings. `set_value(section, key, value)`, `get_value(section, key, default)` (¡pasa siempre el 3.º argumento para no romper al añadir keys en updates!), `save("user://settings.cfg")`, `load(path)`. Variantes cifradas: `save_encrypted_pass` / `load_encrypted_pass` ([docs ConfigFile](https://docs.godotengine.org/en/stable/classes/class_configfile.html)).
-- **`FileAccess`** — E/S de bajo nivel. `FileAccess.open(path, FileAccess.WRITE|READ)` devuelve `null` si falla (chequea `FileAccess.get_open_error()`). `store_string()` / `get_as_text()` para texto; `store_var(value, full_objects=false)` / `get_var(allow_objects=false)` para binario seguro. `open_encrypted_with_pass(path, mode, pass)` para cifrado casual ([docs FileAccess](https://docs.godotengine.org/en/latest/classes/class_fileaccess.html)).
-- **`JSON`** — serialización portable. Estático: `JSON.stringify(data, "\t")` (pretty-print) y `JSON.parse_string(text)` (devuelve `null` si error). Con instancia para diagnóstico: `var j := JSON.new(); j.parse(text)` + `j.get_error_message()` / `j.get_error_line()` ([docs JSON](https://docs.godotengine.org/en/stable/classes/class_json.html)).
-- **`ResourceSaver` / `ResourceLoader`** — solo para datos de autoría. `ResourceSaver.save(res, "user://x.tres")`; `ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)` — usa `CACHE_MODE_IGNORE` o el cache (`CACHE_MODE_REUSE`, default) te devuelve la instancia vieja al recargar un slot ([docs ResourceSaver](https://docs.godotengine.org/en/stable/classes/class_resourcesaver.html), [GDQuest](https://www.gdquest.com/library/save_game_godot4/)).
+- **`ConfigFile`** — settings. `set_value(section, key, value)`, `get_value(section, key, default)` (¡pasa siempre el 3.º argumento para no romper al añadir keys en updates!), `save("user://settings.cfg")`, `load(path)`. Variantes cifradas: `save_encrypted_pass` / `load_encrypted_pass` ([docs ConfigFile](https://docs.godotengine.org/en/4.6/classes/class_configfile.html)).
+- **`FileAccess`** — E/S de bajo nivel. `FileAccess.open(path, FileAccess.WRITE|READ)` devuelve `null` si falla (chequea `FileAccess.get_open_error()`). `store_string()` / `get_as_text()` para texto; `store_var(value, full_objects=false)` / `get_var(allow_objects=false)` para binario seguro. `open_encrypted_with_pass(path, mode, pass)` para cifrado casual ([docs FileAccess](https://docs.godotengine.org/en/4.6/classes/class_fileaccess.html)).
+- **`JSON`** — serialización portable. Estático: `JSON.stringify(data, "\t")` (pretty-print) y `JSON.parse_string(text)` (devuelve `null` si error). Con instancia para diagnóstico: `var j := JSON.new(); j.parse(text)` + `j.get_error_message()` / `j.get_error_line()` ([docs JSON](https://docs.godotengine.org/en/4.6/classes/class_json.html)).
+- **`ResourceSaver` / `ResourceLoader`** — solo para datos de autoría. `ResourceSaver.save(res, "user://x.tres")`; `ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)` — usa `CACHE_MODE_IGNORE` o el cache (`CACHE_MODE_REUSE`, default) te devuelve la instancia vieja al recargar un slot ([docs ResourceSaver](https://docs.godotengine.org/en/4.6/classes/class_resourcesaver.html), [GDQuest](https://www.gdquest.com/library/save_game_godot4/)).
 
 ### GDScript
 
@@ -1687,7 +1739,7 @@ class_name ItemData extends Resource
 
 ### C# (.NET 8)
 
-Idiomático: `partial class : Node`, `[Export]`, `[Signal]` con delegados `EventHandler`. La comunidad usa `System.Text.Json` con `FileAccess` para la E/S, no el `JSON` de Godot ([Mouillard](https://medium.com/@romain.mouillard.fr/lightweight-saving-loading-system-in-godot-4-with-c-a-practical-guide-2cb6cbd2faa3), [Aceade](https://aceade.net/2025/01/12/parsing-arbitrary-json-in-godot-net/)):
+Idiomático: `partial class : Node`, `[Export]`, `[Signal]` con delegados `EventHandler`. La comunidad usa `System.Text.Json` con `FileAccess` para la E/S, no el `JSON` de Godot ([Mouillard](https://medium.com/@romain.mouillard.fr/lightweight-saving-loading-system-in-godot-4-with-c-a-practical-guide-2cb6cbd2faa3), [Aceade](https://aceade.net/2025/01/12/parsing-arbitrary-json-in-godot-net/)). `System.Text.Json` mapea por nombre de propiedad (PascalCase por defecto); si renombras un campo del record o cambias el casing del JSON sin `[JsonPropertyName]`, el campo se deserializa a su valor por defecto silenciosamente:
 
 ```csharp
 using Godot;
@@ -1723,7 +1775,9 @@ public partial class SaveManager : Node
         return Error.Ok;
     }
 
-    public SaveData LoadGame(int slot)
+    // Deserialize<SaveData> devuelve SaveData? (null ante "null"/JSON vacío):
+    // tipo de retorno anulable y guarda antes de usarlo (paridad con el GDScript).
+    public SaveData? LoadGame(int slot)
     {
         string path = SlotPath(slot);
         if (!FileAccess.FileExists(path))
@@ -1731,14 +1785,23 @@ public partial class SaveManager : Node
         using var f = FileAccess.Open(path, FileAccess.ModeFlags.Read);
         if (f is null)
             return null;
-        var data = JsonSerializer.Deserialize<SaveData>(f.GetAsText());
+        SaveData? data;
+        try { data = JsonSerializer.Deserialize<SaveData>(f.GetAsText()); }
+        catch (JsonException) { GD.PushWarning($"Save corrupto en slot {slot}"); return null; }
+        if (data is null) { GD.PushWarning($"Save corrupto en slot {slot}"); return null; }
+        data = Migrate(data);
         EmitSignal(SignalName.GameLoaded, slot);
         return data;
     }
+
+    private static SaveData Migrate(SaveData data) =>
+        data.Version < SaveVersion
+            ? data with { Version = SaveVersion, Pos = data.Pos ?? new float[] { 0f, 0f, 0f } }
+            : data;
 }
 ```
 
-**Gotcha C# 4.6 (breaking 4.5→4.6):** los nombres de tracks de `AnimationPlayer` pasaron de `String` a `StringName`. **Recompila el proyecto C#** tras actualizar a 4.6, y revisa cualquier dato de animación serializado por nombre. Recuerda además que las señales solo transportan tipos primitivos / builtin de Godot / `GodotObject`, lo cual condiciona cómo estructuras tus DTOs de save.
+**Gotcha C# 4.6 (breaking 4.5→4.6):** propiedades de *nombre de animación* de `AnimationPlayer` (`current_animation`, `assigned_animation`, `autoplay`, `get_queue()`, señal `current_animation_changed`) pasaron de `String` a `StringName` (GH-110767). Un `string` literal sigue compilando por conversión implícita; **leer** esas propiedades como `string` rompe a nivel de fuente. Recuerda además que las señales solo transportan tipos primitivos / builtin de Godot / `GodotObject`, lo cual condiciona cómo estructuras tus DTOs de save.
 
 ### Nodos/clases 4.6
 
@@ -1752,8 +1815,9 @@ public partial class SaveManager : Node
 ### Pitfalls
 
 - **Ejecución de código al cargar `.tres`/`.res`:** un Resource puede embeber un script que corre al cargar. Si cargas un save que el jugador editó, eso es RCE. Por eso el progreso va en JSON plano, no en Resources ([GDQuest](https://www.gdquest.com/library/save_game_godot4/)). Si **debes** cargar Resources como saves, usa el *Godot Safe Resource Loader* (drop-in que verifica que el `.tres` no contiene código).
-- **`store_var`/`get_var` son seguros por defecto** (`full_objects=false` / `allow_objects=false`): binario sin serialización de objetos. Solo se vuelve peligroso si activas `full_objects=true` — ahí reintroduces el mismo riesgo que los Resources ([docs FileAccess](https://docs.godotengine.org/en/latest/classes/class_fileaccess.html)).
+- **`store_var`/`get_var` son seguros por defecto** (`full_objects=false` / `allow_objects=false`): binario sin serialización de objetos. Solo se vuelve peligroso si activas `full_objects=true` — ahí reintroduces el mismo riesgo que los Resources ([docs FileAccess](https://docs.godotengine.org/en/4.6/classes/class_fileaccess.html)).
 - **JSON convierte todo número a `float`:** un `int` guardado se relee como `1.0`. Castea con `int()`. Tipos Godot (`Vector3`, `Color`) no son JSON-nativos → serialízalos como arrays/strings.
+- **Los `Dictionary[K,V]` tipados NO son compatibles con `JSON.parse_string`:** asignar el resultado a un `Dictionary[StringName, int]` lanza un error de asignación ([issue #97137](https://github.com/godotengine/godot/issues/97137)). Al recargar, trata el resultado como `Dictionary` sin tipar y reconstruye: las claves `StringName` vuelven como `String` y los enteros como `float`.
 - **No guardes referencias a nodos ni `NodePath` vivos:** serializan estado roto al recargar la escena. Guarda IDs/coords y reconstruye.
 - **Versionado de Resources: Godot NO lo tiene nativo** ([proposal #7567](https://github.com/godotengine/godot-proposals/discussions/7567)). Renombrar un `@export` o cambiar la jerarquía **pierde datos**. JSON + campo `"version"` + función `_migrate()` es lo robusto para saves de larga vida.
 - **`ConfigFile.get_value` sin default rompe** al añadir keys en updates. Pasa siempre el 3.º argumento.
@@ -1780,7 +1844,7 @@ El error clásico al construir la interfaz de un RPG 3D es inventar un "sistema 
 
 **Capas.** El HUD de pantalla va sobre un `CanvasLayer` (capa 2D que se dibuja encima del mundo, ajena a la cámara 3D/2D). Dentro, una raíz `Control` (típicamente `MarginContainer` → `VBoxContainer`/`HBoxContainer`) y se distribuye con **anclajes + contenedores**, nunca con posiciones absolutas ([CanvasLayer docs](https://docs.godotengine.org/en/stable/classes/class_canvaslayer.html), [Canvas layers](https://docs.godotengine.org/en/stable/tutorials/2d/canvas_layers.html)). Las barras ancladas al mundo (vida sobre la cabeza de un enemigo) se resuelven con un `Sprite3D`/`SubViewport` + `TextureProgressBar` en billboard (receta de [KidsCanCode 3D Unit Healthbars](https://kidscancode.org/godot_recipes/4.x/3d/healthbars/index.html)).
 
-**Barras de vida/recurso.** Tanto `ProgressBar` como `TextureProgressBar` derivan de `Range` ([ProgressBar docs](https://docs.godotengine.org/en/stable/classes/class_progressbar.html), [TextureProgressBar docs](https://docs.godotengine.org/en/stable/classes/class_textureprogressbar.html)). Propiedades de `Range`: `value`, `min_value`, `max_value`, `step`, `page`, `ratio` (normalizado 0–1, solo lectura), `exp_edit`, `rounded`; señal `value_changed(value: float)`. `TextureProgressBar` añade hasta tres texturas — `texture_under`, `texture_progress`, `texture_over` — más `fill_mode` (`FILL_LEFT_TO_RIGHT`, `FILL_BOTTOM_TO_TOP`, `FILL_CLOCKWISE`…), `tint_progress`, `nine_patch_stretch` y `stretch_margin_*`. Usa `TextureProgressBar` cuando quieres arte; `ProgressBar` cuando basta un rectángulo del tema.
+**Barras de vida/recurso.** Tanto `ProgressBar` como `TextureProgressBar` derivan de `Range` ([ProgressBar docs](https://docs.godotengine.org/en/stable/classes/class_progressbar.html), [TextureProgressBar docs](https://docs.godotengine.org/en/stable/classes/class_textureprogressbar.html)). Propiedades de `Range`: `value`, `min_value`, `max_value`, `step`, `page`, `ratio` (normalizado 0–1, lectura/escritura — escribirlo fija `value` proporcionalmente vía `set_as_ratio`), `exp_edit`, `rounded`; señal `value_changed(value: float)`. `TextureProgressBar` añade hasta tres texturas — `texture_under`, `texture_progress`, `texture_over` — más `fill_mode` (`FILL_LEFT_TO_RIGHT`, `FILL_BOTTOM_TO_TOP`, `FILL_CLOCKWISE`…), `tint_progress`, `nine_patch_stretch` y `stretch_margin_*`. Usa `TextureProgressBar` cuando quieres arte; `ProgressBar` cuando basta un rectángulo del tema.
 
 **Animación suave.** No saltes el `value`. Anímalo con un `Tween` del SceneTree: `create_tween().tween_property(bar, "value", nuevo_hp, 0.2)`. El viejo `interpolate_property` no existe en 4.x.
 
@@ -1960,7 +2024,7 @@ public partial class PauseMenu : Control
 }
 ```
 
-**Gotcha 4.5→4.6 en C#:** los nombres de pista de `AnimationPlayer` pasaron de `String` a `StringName`, así que **recompila** el proyecto C# tras actualizar; cualquier código que pasara nombres de pista como `string` literal sigue funcionando por conversión implícita, pero hay que reconstruir los assemblies. Usa `StringName` (`&"..."` en GDScript) para nombres de override/variation y acciones de input.
+**Gotcha 4.5→4.6 en C#:** en 4.6 (GH-110767) varias propiedades de nombre de animación de `AnimationPlayer` pasaron de `String` a `StringName`: `current_animation`, `assigned_animation`, `autoplay`, el retorno de `get_queue()` (ahora `StringName[]`) y el parámetro de la señal `current_animation_changed`. No es solo recompilar: es un cambio incompatible a nivel de fuente (ni binario ni source-compatible). Pasar un `string` literal a métodos que ahora toman `StringName` sigue compilando por conversión implícita, pero el código que LEE estas propiedades rompe: `string a = player.CurrentAnimation` (ahora `StringName`), handlers `void(string)` para `CurrentAnimationChanged`, y `string[] = player.GetQueue()` (ahora `StringName[]`). Ajusta esos tipos a `StringName`/`StringName[]` y recompila. Usa `StringName` (`&"..."` en GDScript) para nombres de override/variation y acciones de input.
 
 ### Nodos/clases 4.6
 
@@ -1975,7 +2039,7 @@ public partial class PauseMenu : Control
 
 ### Pitfalls
 
-- **Tween + pausa:** un `Tween` independiente se detiene cuando el árbol está en pausa aunque el nodo destino sea `PROCESS_MODE_ALWAYS` ([GH #81994](https://github.com/godotengine/godot/issues/81994)). Para fades del menú de pausa, crea el tween desde un nodo en `PROCESS_MODE_ALWAYS`; los tweens ligados a un nodo heredan su process mode.
+- **Tween + pausa:** un `Tween` independiente se detiene cuando el árbol está en pausa aunque el nodo destino sea `PROCESS_MODE_ALWAYS` ([GH #81994](https://github.com/godotengine/godot/issues/81994)). Para fades del menú de pausa, crea el tween desde un nodo en `PROCESS_MODE_ALWAYS`; los tweens ligados a un nodo heredan su process mode. Solución directa: `var tw := create_tween(); tw.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)` para que el tween corra durante la pausa; por defecto `TWEEN_PAUSE_BOUND` hereda el process_mode del nodo ligado.
 - **CanvasLayer del menú sin process_mode correcto:** si olvidas poner el `CanvasLayer`/raíz del menú en `ALWAYS`/`WHEN_PAUSED`, los botones quedan inclicables en pausa (bug clásico de principiante).
 - **Foco perdido al mostrar/ocultar:** mostrar un panel no le da foco solo; hay que `grab_focus()` en su primer control o la navegación con gamepad muere. El foco espacial solo encuentra nodos con `focus_mode != FOCUS_NONE` (salta `Label`/`Panel`).
 - **`get_focus_neighbor()` solo devuelve asignaciones manuales** ([GH #77729](https://github.com/godotengine/godot/issues/77729)) — no sirve para leer el vecino auto-calculado.
@@ -2000,7 +2064,7 @@ La gestión de mundo en un RPG 3D de Godot 4.6 NO requiere un framework propio: 
 
 Cuatro pilares, ningún addon obligatorio:
 
-1. **Cambio de escena completo — `SceneTree`.** `SceneTree.change_scene_to_packed(packed: PackedScene) -> Error` cuando ya tienes el `PackedScene` cargado (resultado de carga threaded), y `SceneTree.change_scene_to_file(path: String) -> Error` como atajo síncrono que carga el `.tscn` y bloquea. Accedes vía `get_tree()` desde cualquier `Node`, o `Engine.get_main_loop() as SceneTree`. **Gotcha verificado en docs**: ambos liberan la escena saliente de forma diferida (al final del frame), así que justo tras la llamada `get_tree().current_scene` puede ser `null`; no asumas cambio inmediato ([class_scenetree](https://docs.godotengine.org/en/stable/classes/class_scenetree.html), [docs issue #8868](https://github.com/godotengine/godot-docs/issues/8868)).
+1. **Cambio de escena completo — `SceneTree`.** `SceneTree.change_scene_to_packed(packed: PackedScene) -> Error` cuando ya tienes el `PackedScene` cargado (resultado de carga threaded), y `SceneTree.change_scene_to_file(path: String) -> Error` como atajo síncrono que carga el `.tscn` y bloquea. Accedes vía `get_tree()` desde cualquier `Node`, o `Engine.get_main_loop() as SceneTree`. **Gotcha verificado en docs**: ambos liberan la escena saliente de forma diferida (al final del frame), así que justo tras la llamada `get_tree().current_scene` puede ser `null`; no asumas cambio inmediato ([class_scenetree.change_scene_to_packed](https://docs.godotengine.org/en/stable/classes/class_scenetree.html#class-scenetree-method-change-scene-to-packed); ver tb. [docs issue #8868](https://github.com/godotengine/godot-docs/issues/8868)).
 
 2. **Carga en background — `ResourceLoader` threaded.** Patrón canónico de los docs ([background_loading](https://docs.godotengine.org/en/stable/tutorials/io/background_loading.html)):
    - `ResourceLoader.load_threaded_request(path, type_hint := "", use_sub_threads := false, cache_mode := CACHE_MODE_REUSE) -> Error`
@@ -2153,7 +2217,7 @@ public partial class SceneManager : Node
         switch (status)
         {
             case ResourceLoader.ThreadLoadStatus.InProgress:
-                float p = _progress.Count > 0 ? (float)_progress[0] : 0f;
+                float p = _progress.Count > 0 ? _progress[0].AsSingle() : 0f;
                 EmitSignal(SignalName.LoadProgress, p);
                 break;
             case ResourceLoader.ThreadLoadStatus.Loaded:
