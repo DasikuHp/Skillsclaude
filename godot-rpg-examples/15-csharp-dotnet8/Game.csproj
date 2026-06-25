@@ -1,0 +1,23 @@
+<!-- NO escribas esto a mano: Godot lo crea con Project > Tools > C# > Create C# solution.
+     El Sdk debe coincidir con la version del editor (build .NET/Mono de Godot 4.6). -->
+<Project Sdk="Godot.NET.Sdk/4.6.3">
+  <PropertyGroup>
+    <!-- net8.0 OBLIGATORIO en 4.6: net6.0/net7.0 NO compilan con GodotSharp 4.4+. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+
+    <!-- NativeAOT desktop (opcional). Android/iOS = experimental, sin cross-OS,
+         sin espacios en el nombre del proyecto (GH-102747). Web: C# NO soportado en 4.6. -->
+    <!-- <PublishAOT>true</PublishAOT> -->
+  </PropertyGroup>
+
+  <!-- Necesario con AOT: el trimming elimina rutas de reflexion que Godot usa
+       -> crashea en runtime aunque compile. Rootea los assemblies clave. -->
+  <!--
+  <ItemGroup Condition="'$(PublishAOT)' == 'true'">
+    <TrimmerRootAssembly Include="GodotSharp" />
+    <TrimmerRootAssembly Include="Game" />
+  </ItemGroup>
+  -->
+</Project>

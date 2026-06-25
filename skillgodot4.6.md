@@ -2288,6 +2288,764 @@ Referencias de arquitectura: [godot-open-rpg](https://github.com/gdquest-demos/g
 
 **Veredicto ponytail:** NO construyas un "WorldManager" ni un sistema de threading propio. Reutiliza `SceneTree.change_scene_to_packed` + `ResourceLoader` threaded + un autoload `SceneManager` de ~60 líneas (`CanvasLayer`+`ColorRect`+`Tween` para el fade), groups/signals para desacoplar, y `WorkerThreadPool` solo para CPU custom. Para streaming open-world masivo NO rodes tu chunker: usa Godot-Open-World-Database. El mejor código de arquitectura es el que reutiliza nodos nativos.
 
+# Temas avanzados: shaders, importación, errores, depuración y C# (anti-stuck)
+
+Estas cinco secciones existen para que un agente de IA (o un dev) **no se quede atascado**: cubren los puntos donde el motor falla en silencio o con mensajes crípticos. Cada una trae el enfoque nativo, código real, los **mensajes de error literales** con su fix, y una ruta de desatasque. Notas con fuentes en [`godot-rpg-research/`](./godot-rpg-research/).
+
+## 11. Shaders para RPG
+
+Los seis efectos clásicos de un RPG 3D (hit-flash, dissolve de muerte, outline/silueta, toon/cel, escudo Fresnel, agua) son cada uno entre 10 y 40 líneas de **Godot Shading Language** en texto (`.gdshader`). El error que atasca a una IA NO es escribir el efecto: es elegir mal el contenedor del material, compartir el recurso entre instancias, usar sintaxis de Godot 3, o no saber qué cambió en 4.6. Esta sección mapea cada efecto a la API exacta y blinda los puntos donde el render se rompe en silencio.
+
+### Enfoque nativo recomendado
+
+**Antes de escribir un shader, elige el contenedor.** El 80% de los bugs "no se ve / se ve raro / se aplica a todo" vienen de aquí:
+
+| Necesitas... | Usa | Por qué |
+|---|---|---|
+| Reemplazar el look completo (toon, agua) | `ShaderMaterial` en el slot Material | Control total, sin PBR |
+| Mantener PBR y AÑADIR un efecto encima (escudo, dissolve overlay) | `StandardMaterial3D` + `Material.next_pass` = `ShaderMaterial` | No reescribes el PBR |
+| Outline/silueta de selección o hover | `StandardMaterial3D` → sección **Stencil** (modo Outline, nativo 4.5+) | Cero shader propio |
+| Hit-flash en muchos enemigos que comparten material | `instance uniform` + `set_instance_shader_parameter()` | No duplica recurso, va por MeshInstance3D |
+
+Hechos canónicos que evitan la mitad de los atascos:
+- `ShaderMaterial` y `StandardMaterial3D` son hermanos (ambos heredan de `Material`/`BaseMaterial3D`). `Material.next_pass` encadena pasadas; **no todo tiene que ser ShaderMaterial**.
+- `set_shader_parameter(param: StringName, value: Variant)` vive en `ShaderMaterial`, NO en `Shader`. En 4.x ya **no existe** `set_shader_param` (era Godot 3). Cada `uniform` del shader es un parámetro; el nombre debe coincidir literal.
+- **Dos rutas distintas para el mismo uniform** y la IA las confunde: por código directo `set_shader_parameter("flash", v)` (sin barra); por Tween/AnimationPlayer la *property path* es `"shader_parameter/flash"` (con barra). Mezclarlas no da error fuerte: simplemente no pasa nada.
+- `SCREEN_TEXTURE`, `DEPTH_TEXTURE` y `NORMAL_ROUGHNESS_TEXTURE` **fueron ELIMINADOS como built-ins** ([PR #70967](https://github.com/godotengine/godot/pull/70967)). Ahora son uniforms con hint: `uniform sampler2D screen_tex : hint_screen_texture;`. `SCREEN_UV`, `TIME`, `FRAGCOORD`, `VIEW`, `NORMAL`, `UV` siguen siendo built-ins.
+
+**BREAKING 4.6 que rompe shaders existentes en silencio — y que la IA va a malinterpretar.** En 4.6, dentro de la struct `SceneData` de los **GLSL/compute crudos** (`.glsl`, `CompositorEffect`, `RenderingDevice`), `view_matrix` e `inv_view_matrix` cambiaron de `mat4` a `mat3x4` — y la guía de migración lo **omitió** inicialmente ([godot-docs#11744](https://github.com/godotengine/godot-docs/issues/11744)). Las tres lentes coinciden y verifiqué: esto **NO afecta** a `shader_type spatial` de alto nivel — ahí `VIEW_MATRIX`/`INV_VIEW_MATRIX` siguen siendo `mat4`. Los seis efectos RPG de esta sección son 100% `.gdshader` spatial/canvas_item, así que **no te afecta** salvo que escribas compute shaders. Si tocas `SceneData` en GLSL, el síntoma es geometría deformada o sombras desaparecidas tras actualizar de 4.5; reconstruye con `mat4(...)` o transpón según el orden de la multiplicación. Apunta a ≥4.6.3 (hubo regresiones de SDFGI/sky en snapshots intermedios, [godot#115599](https://github.com/godotengine/godot/issues/115599)).
+
+### GDScript (hit-flash multi-enemigo, el patrón base de un RPG)
+
+El efecto #1 de daño y el bug #1 de RPG: si 30 goblins comparten el `.tres` del `ShaderMaterial`, `set_shader_parameter("flash", 1.0)` los hace **parpadear a todos**. La solución correcta y barata es `instance uniform` + `set_instance_shader_parameter` (apunta al MeshInstance3D, no al recurso). Ver bloque de ejemplos al final.
+
+### Shader (.gdshader): los seis efectos
+
+Todos verificados como Godot Shading Language 4.x/4.6. Resumen de los built-ins de salida que usan: `ALBEDO`, `EMISSION`, `ALPHA` (fragment); `DIFFUSE_LIGHT`, `SPECULAR_LIGHT` (light, con `+=`). Ver los archivos compilables en la sección de ejemplos.
+
+Notas por efecto:
+- **Hit-flash:** `ALBEDO = mix(base, flash_color, flash)`; añade `EMISSION` para que "pegue" con glow (en 4.6 el glow es más brillante). `source_color` en el uniform es **obligatorio** o el color se ve apagado.
+- **Dissolve:** ruido + `if (n < dissolve) discard;` + borde `smoothstep`. Usa `render_mode cull_disabled` para no ver el interior hueco. En personajes skinned, samplea el ruido por posición de mundo (triplanar), no por UV, o las costuras se ven feas.
+- **Outline:** primero intenta la sección **Stencil → Outline** nativa de `StandardMaterial3D` (cero código). Solo si necesitas X-ray "ver aliados a través de paredes" usa el patrón de dos pases con stencil (abajo). Para mobile barato, casco invertido (`cull_front` + inflar VERTEX por NORMAL).
+- **Toon/cel:** sobrescribe `light()` y usa `DIFFUSE_LIGHT += ...` (con `+=`, nunca `=`). El atajo más barato si no necesitas control fino es `render_mode diffuse_toon, specular_toon;`.
+- **Escudo Fresnel:** `pow(1.0 - dot(NORMAL, VIEW), power)`. El built-in es `VIEW` (no `VIEW_DIR`). `render_mode blend_add, unshaded, depth_draw_never`.
+- **Agua:** desplazamiento en `vertex()`, foam con `hint_depth_texture`. El depth NO es lineal; hay que reconstruir (ver pitfalls). Evítala en el export web (Compatibility).
+
+### Shader (.gdshader): outline por stencil (4.5+, solo si el modo nativo no basta)
+
+Verificado: `stencil_mode write, compare_always, 1;` en el material base y `stencil_mode read, compare_not_equal, 1;` en el `next_pass`. El pase 2 va en el **Next Pass** del material base, o no se ve nada. Ver ejemplo `outline_stencil_pass2.gdshader`.
+
+### Pitfalls y mensajes de error literales
+
+| Mensaje / síntoma | Causa | Fix |
+|---|---|---|
+| `Unknown identifier in expression: 'SCREEN_TEXTURE'` (o `DEPTH_TEXTURE`) | sintaxis Godot 3 | declara `uniform sampler2D t : hint_screen_texture;` |
+| `Unknown identifier in expression: 'VIEW_DIR'` | built-in inventado | es `VIEW` |
+| `Invalid call. Nonexistent function 'set_shader_param'` (GDScript) | API Godot 3 | usa `set_shader_parameter()` |
+| `Varying must be assigned before using!` | usas un varying en `fragment()`/`light()` sin asignarlo en `vertex()` | declara el varying global, asígnalo SOLO en `vertex()`, léelo en `fragment()` ([#50464](https://github.com/godotengine/godot/issues/50464)) |
+| `Expected constant expression after '='` | `const float x = 1.0/1024.0;` o `const ... = pow(x,y);` el parser no evalúa esa aritmética | precalcula el literal o usa un `uniform` ([#33840](https://github.com/godotengine/godot/issues/33840), [#81391](https://github.com/godotengine/godot/issues/81391)) |
+| Crash editor `Index is out of bounds` | un `sampler2D` con hint seguido de otro sin hint | pon hints explícitos en todos los samplers contiguos ([#67493](https://github.com/godotengine/godot/issues/67493)) |
+| Toda la horda parpadea al herir a uno | `ShaderMaterial` compartido + `set_shader_parameter` | `instance uniform` + `set_instance_shader_parameter` (o `duplicate()` / `local_to_scene`) |
+| Instance uniform "contamina" el outline | bug `next_pass`: modificar un instance uniform afecta al del next_pass | no reuses el mismo nombre entre pases ([#83472](https://github.com/godotengine/godot/issues/83472)) |
+| `next_pass` ShaderMaterial sobre StandardMaterial3D solo muestra albedo | bug histórico ([#76537](https://github.com/godotengine/godot/issues/76537)) | invierte el orden (base = ShaderMaterial) o verifica `render_mode`/blend del next_pass |
+| Foam de agua cambia con la cámara | `texture(depth_tex,uv).r` es depth NDC no-lineal, no metros | reconstruye con `INV_PROJECTION_MATRIX` (ver código) |
+| Agua/escudo OK en Forward+, roto en web | Compatibility usa NDC OpenGL; `ndc.z` puede necesitar `raw*2.0-1.0` | rama por renderer o evita screen/depth en web |
+| Pantalla negra al cambiar resolución | coexisten `hint_depth_texture` + `hint_screen_texture` | no los mezcles en escenas con resize ([#97728](https://github.com/godotengine/godot/issues/97728)) |
+| Líneas rosa gridded con screen texture en web | bug Compatibility ([#79914](https://github.com/godotengine/godot/issues/79914)) | evita screen-space en el build web |
+| Outline desaparece en export web | stencil no soportado en Compatibility | fallback a casco invertido o post-proceso |
+| Sombra no desaparece con la malla disuelta | `discard` no castea sombra como `ALPHA_SCISSOR_THRESHOLD` | usa `ALPHA` + `ALPHA_SCISSOR_THRESHOLD` si necesitas sombras correctas ([#58924](https://github.com/godotengine/godot/issues/58924)) |
+
+### Cómo no quedarte atascado (pasos de decisión)
+
+1. **¿2D/HUD o mundo 3D?** → `shader_type canvas_item` vs `spatial`. RPG: el mundo es `spatial`, el post-proceso/HUD va en un `canvas_item` sobre un `CanvasLayer`.
+2. **¿Reemplazo el material o lo añado encima?** Añadir = `Material.next_pass`. No conviertas un PBR funcional en ShaderMaterial solo para un overlay.
+3. **¿Outline?** Primero prueba `StandardMaterial3D` → Stencil → Outline (nativo). Solo escribe shader si necesitas X-ray.
+4. **¿El efecto se dispara por instancia (flash, dissolve por enemigo)?** → `instance uniform` + `set_instance_shader_parameter`, NUNCA `set_shader_parameter` sobre recurso compartido.
+5. **¿Uso pantalla/profundidad (agua, escudo con intersección, distorsión)?** Asume que se rompe en web (Compatibility). Declara los uniforms con `hint_screen_texture`/`hint_depth_texture`, reconstruye depth lineal, y ten un fallback sin screen-space para el export web.
+6. **¿Web?** Renderer = Compatibility, y **web no tiene C#** → escribe la lógica de disparo en GDScript. Sin stencil, sin agua refractiva fiable.
+7. **¿Toca compute/GLSL crudo con `SceneData`?** Solo entonces te afecta `mat3x4`. Para `.gdshader` ignóralo.
+
+### Addon vs construirlo
+
+**Construir** los seis efectos: cada uno es <40 líneas, dependen de tus uniforms/pipeline, y un addon añade acoplamiento sin ahorro. Copia de [godotshaders.com](https://godotshaders.com) y adapta a 4.6 (verifica que no use `SCREEN_TEXTURE` viejo). **Excepción razonable:** una librería de funciones noise/fresnel vía `#include`, y para **agua realista/SSR** sí considerar un asset 4.6 verificado por la complejidad de depth+refracción. **Reusar antes que escribir:** outline (sección Stencil nativa), toon básico (`diffuse_toon`/`specular_toon`), y ruido (`NoiseTexture2D`/`FastNoiseLite` seamless en vez de generar ruido en el shader).
+
+Texto (`.gdshader`) sobre VisualShader para todo: versionable en git, diffeable en PRs, y VisualShader no expone `stencil_mode` ni `light()` custom de forma completa.
+
+**Veredicto ponytail:** el mejor shader es el que no escribes — outline con la sección Stencil nativa de `StandardMaterial3D`, toon con `render_mode diffuse_toon`, ruido con `NoiseTexture2D`. Cuando sí escribas, son 30 líneas: declara tus uniforms con `source_color`/`hint_*`, dispáralos por instancia con `set_instance_shader_parameter` (no revientes la horda entera), y recuerda que `SCREEN_TEXTURE` murió en Godot 3. El `mat3x4` de 4.6 es un susto de compute, no de tus efectos.
+
+## 12. Importación de assets
+
+El error mental que atasca a casi toda IA: **Godot no edita tu asset de origen, lo importa**. Un `.glb`/`.blend`/`.png` se compila a un artefacto en `.godot/imported/` (`.scn`, `.ctex`) gobernado por un sidecar de texto INI `archivo.glb.import` (que contiene el `uid://`, el preset y los flags). En runtime cargas **el resultado importado** (un `PackedScene`), nunca el `.glb` "directamente". Tres niveles, y la confusión entre ellos es el bug #1:
+
+1. **Source** (`.glb`) — lo entrega el artista.
+2. **Import config** (`.glb.import`, importador `ResourceImporterScene`) — Import dock (global del archivo) + Advanced Import Settings (por nodo/material/mesh/animación).
+3. **Imported resource** + instancia/escena heredada (lo que el juego carga y donde haces overrides sin tocar el import).
+
+### Enfoque nativo recomendado
+
+Todo el pipeline base es **nativo en 4.6**: glTF, `.glb`, `.blend`, FBX (importador interno **ufbx** desde 4.3, sin SDK propietario), AnimationLibrary, retargeting humanoide (`SkeletonProfileHumanoid` + `BoneMap` + `RetargetModifier3D`). **No necesitas addons** para un RPG de un personaje/prop.
+
+Decisiones canónicas:
+
+- **Formato: `.glb`** (binario, autocontenido). Reproducible, no necesita Blender en cada máquina ni en CI. Reserva `.blend` directo solo para iteración local en solitario; FBX solo para mocap heredado.
+- **`.blend` directo** llama a Blender por debajo (`EditorSceneFormatImporterBlend`). Requiere **DOS** settings distintos: activar en *Project Settings → Filesystem → Import → Blender → Enabled*, **y** la ruta en *Editor Settings → Filesystem → Import → Blender → Blender 3 Path* (clave `filesystem/import/blender/blender3_path`). La ruta apunta a la **carpeta** que contiene el ejecutable (p.ej. `/usr/bin`), no al binario. Necesitas Blender 3.0+ (en la práctica 3.3+/4.x).
+- **Materiales: extráelos a archivos.** Los materiales del `.glb` son **Built-In** por defecto (embebidos, regenerados en cada reimport). Para editarlos persistente: Advanced Import Settings → selecciona el material → *Materials → Storage = Files (.material/.tres)* y/o *Keep On Reimport*. Para variantes en runtime usa `set_surface_override_material()`, no mutes el importado.
+- **Texturas:** *VRAM Compressed* + *Mipmaps ON* para 3D; *Lossless* para UI/pixel-art 2D. **Color espacial:** albedo = sRGB; normal/roughness/metallic/AO = **linear (Non-Color)**. La opción *Normal Map* del importador solo surte efecto con VRAM Compressed.
+- **Animaciones:** una escena base con malla+`Skeleton3D` (*Import As: Scene*); cada set de clips *Import As: Animation Library*, que se añaden a un único `AnimationPlayer` (`add_animation_library("locomotion", lib)`). Retarget Mixamo/mocap → tu rig vía `BoneMap` + `SkeletonProfileHumanoid` (auto-mapping si los huesos llevan nombres ingleses estándar), aplicado en runtime por `RetargetModifier3D`.
+- **VCS:** commitea fuentes + `*.import` + `.tres`/`.material` extraídos; ignora `.godot/` entero.
+
+### GDScript
+
+```gdscript
+extends Node3D
+
+# Ruta conocida en compile-time: preload valida en editor y es más rápido.
+# Cargas la ESCENA importada (PackedScene), nunca el .glb "crudo".
+const EnemyScene: PackedScene = preload("res://assets/enemies/goblin.glb")
+
+func spawn_static() -> Node3D:
+	var enemy := EnemyScene.instantiate() as Node3D  # 4.x: instantiate(), NO instance()
+	add_child(enemy)
+	return enemy
+
+# Ruta dinámica en runtime.
+func spawn(path: String) -> Node3D:
+	var packed := load(path) as PackedScene
+	if packed == null:
+		push_error("No se pudo cargar PackedScene: %s" % path)
+		return null
+	var inst := packed.instantiate() as Node3D
+	add_child(inst)
+	return inst
+
+# Override de material en runtime SIN tocar el import (material embebido = read-only).
+func tint_enemy(inst: Node3D) -> void:
+	var mesh := inst.get_node("Skeleton3D/Body") as MeshInstance3D
+	var mat := preload("res://assets/materials/goblin_red.tres") as StandardMaterial3D
+	mesh.set_surface_override_material(0, mat)
+
+# Reproducir un clip de una AnimationLibrary. En 4.6 los nombres de animación del
+# AnimationPlayer son StringName (GH-110767): usa literales &"..." para evitar
+# fricción con tipado estricto / comparaciones.
+func play_run(anim: AnimationPlayer) -> void:
+	if anim.current_animation != &"locomotion/Run":
+		anim.play(&"locomotion/Run")
+```
+
+Carga asíncrona para mundos grandes (evita stutter):
+
+```gdscript
+func request_async(path: String) -> void:
+	ResourceLoader.load_threaded_request(path)
+
+func poll_async(path: String) -> void:
+	match ResourceLoader.load_threaded_get_status(path):
+		ResourceLoader.THREAD_LOAD_LOADED:
+			var packed := ResourceLoader.load_threaded_get(path) as PackedScene
+			add_child(packed.instantiate())
+		ResourceLoader.THREAD_LOAD_FAILED:
+			push_error("Carga asíncrona falló: %s" % path)
+```
+
+Importar un `.glb` arbitrario en runtime (mods / user content) — `ResourceImporterScene` es editor-only, pero `GLTFDocument` funciona en exports:
+
+```gdscript
+func load_external_glb(path: String) -> Node:
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	var err := doc.append_from_file(path, state)
+	if err != OK:
+		push_error("Couldn't load glTF scene: %d" % err)
+		return null
+	# Si cargas desde buffer (append_from_buffer) debes setear state.base_path
+	# para que se resuelvan las texturas externas.
+	return doc.generate_scene(state)
+```
+
+### C# (.NET 8)
+
+```csharp
+using Godot;
+
+public partial class Spawner : Node3D
+{
+    // Ruta conocida: GD.Load directo.
+    private readonly PackedScene _enemyScene =
+        GD.Load<PackedScene>("res://assets/enemies/goblin.glb");
+
+    public Node3D SpawnStatic()
+    {
+        var enemy = _enemyScene.Instantiate<Node3D>();
+        AddChild(enemy);
+        return enemy;
+    }
+
+    public Node3D? Spawn(string path)
+    {
+        var packed = ResourceLoader.Load<PackedScene>(path);
+        if (packed == null)
+        {
+            GD.PushError($"No se pudo cargar PackedScene: {path}");
+            return null;
+        }
+        var inst = packed.Instantiate<Node3D>();
+        AddChild(inst);
+        return inst;
+    }
+
+    // 4.6: current_animation/autoplay/etc. son StringName (GH-110767).
+    // En C# eso cambia firmas: usa StringName, no string.
+    public void PlayRun(AnimationPlayer anim)
+    {
+        StringName clip = "locomotion/Run";
+        if (anim.CurrentAnimation != clip)
+            anim.Play(clip);
+    }
+}
+```
+
+> **C# + web:** el render web es **Compatibility** y **web NO tiene C#** en 4.6. Si tu RPG exporta a web, mantén la carga/spawn de assets en GDScript.
+
+### Notas de editor / Import dock (no es código)
+
+- **Editar material persistente:** doble clic en el `.glb` → *Advanced Import Settings* → material → *Storage = Files* (extrae `.tres`/`.material`) → *Reimport*. Cambiar un campo NO reimporta solo: pulsa **Reimport**.
+- **Colisión:** importar un mesh **no** crea collider (aunque Jolt sea el motor 3D por defecto). En *Advanced Import Settings* → nodo → *Create Collision* (Trimesh estático / Convex dinámico), o sufija objetos en Blender: `-col`, `-colonly`, `-convcol`, `-navmesh`.
+- **Lightmaps:** activa *Generate Lightmap UV2* en el Import dock del mesh; no confíes en el segundo UV de Blender (issue #93884).
+- **VCS `.gitignore`** (oficial de GitHub): ignora `.godot/`, **conserva** los `*.import`.
+
+### Pitfalls y mensajes de error literales
+
+| Síntoma / mensaje | Causa real | Fix canónico |
+|---|---|---|
+| Material editado **vuelve atrás** al reimportar | Material Storage = Built-In | *Advanced Import → Materials → Storage = Files* (+ Keep On Reimport), o escena heredada |
+| Material del glb "read-only" por código | material embebido | `set_surface_override_material(0, mat)` con material propio |
+| Modelo **negro** | (1) sin luz/environment — el 80% de los casos; (2) normales invertidas/ausentes; (3) normal map marcado sRGB | Añade `DirectionalLight3D` + `WorldEnvironment`; recalcula normales en Blender; normal map en **linear** |
+| Caras **faltantes**/negras de un lado | normales invertidas / material single-sided | Blender: Normals → Recalculate Outside (Shift+N); o `cull_mode = Disabled` (issues #40329, #84358) |
+| Modelo **gigante/diminuto** o **rotado 90°** | escala/ejes no aplicados (Blender Z-up vs Godot Y-up); FBX/ufbx mete empties ×100 | Blender: **`Ctrl+A → All Transforms`** antes de exportar; usa `.glb` no FBX (issue #90314) |
+| `Blend file import is enabled... but no Blender path is configured` | falta ruta en **Editor** Settings | *Editor Settings → Filesystem → Import → Blender → Blender 3 Path* (la **carpeta**, no el `.exe`) |
+| `.blend` no importa / X en FileSystem / CI cuelga | versión de Blender incompatible o ausente en PATH | versión 3.3+; en CI usa `.glb` exportado; primer pase `godot --headless --import --verbose` (issues #67275, #89767, #111265) |
+| `glTF: Image index '0' couldn't be loaded with the name: Image_0. Skipping it.` | checkout limpio sin `*.import` (reimport con defaults) o `.godot/imported/` stale commiteado | commitea `*.import`, borra `.godot/`, reabre (issues #83200, #42235) |
+| Escena que instancia un modelo **deja de cargar** tras re-export | `.glb` exportado **vacío** (Blender exportó con "Selected Objects" sin selección) | desmarca *Selected Objects*; valida tamaño del `.glb` antes de pisarlo (issues #68994, #82275) |
+| Bandas/ruido en normal map a distancia | artefactos de mipmaps con VRAM compression | sube resolución fuente o usa Basis/uncompressed para esa normal (issue #57981) |
+| Accesorios (espada, capa) **dejan de animarse** tras retarget | retargeting aplicado a personaje con accesorios animados | **desactiva** retargeting para ese personaje; actívalo solo en AnimationLibrary compartida |
+| Animación deformada al retargetear | falta `BoneMap`/`SkeletonProfileHumanoid` o nombres de hueso no estándar | `BoneMap` + `SkeletonProfileHumanoid` consistentes, huesos en inglés |
+| `Animation not found` / comparación de anim rara en 4.6 | props del player pasaron String→StringName (GH-110767) | usa literales `&"name"` (GDScript) / `StringName` (C#) |
+| Reimport "colgado" en texturas 4K/8K | coste de VRAM compression (no es cuelgue) | paciencia 1ª vez, o redimensiona fuentes; si corrupto, borra `.godot/imported/` |
+
+### Cómo no quedarte atascado (orden de diagnóstico)
+
+1. **¿Negro?** → primero LUZ/environment, luego normales, luego sRGB del normal map.
+2. **¿Gigante/diminuto/rotado?** → `Ctrl+A → All Transforms` en Blender, usa `.glb` no FBX.
+3. **¿Material no editable / se revierte?** → Storage = Files + Keep, o escena heredada.
+4. **¿Assets rotos tras `git clone`?** → faltan los `*.import` (o commiteaste `.godot/imported/` stale). Commitea `*.import`, ignora `.godot/`, borra caché, reimporta.
+5. **¿`.blend` no importa?** → ruta de Blender en **Editor** Settings (carpeta) + versión 3.3+; si CI, pásate a `.glb`.
+6. **¿Atraviesa el suelo?** → "Create Collision" en el import o sufijo `-col`.
+7. **¿Accesorios no animan tras retarget?** → desactiva retargeting para ese personaje.
+8. **¿Código de anims roto en 4.6?** → props del `AnimationPlayer` ahora `StringName` (`&"name"` / `StringName`).
+9. **¿Mod/user-content en runtime?** → `GLTFDocument.append_from_file()` + `generate_scene()` (no `ResourceImporterScene`, que es editor-only).
+
+### Addon vs construirlo
+
+- **Pipeline base, retargeting, AnimationLibrary, colisión, FBX (ufbx):** todo nativo en 4.6 → **no construyas nada**.
+- **Librerías de animación open-source listas para retarget:** `catprisbrey/Godot4-OpenAnimationLibraries` (reúsalo en vez de hacer mocap propio).
+- **Importar niveles enteros con muchos prefabs posicionados:** *GLTF Level Importer* (burning-barb, itch.io) automatiza instanciado/materiales/colisión desde Blender — útil para blockouts, pero para producción de un RPG de un personaje/prop el pipeline nativo de Advanced Import Settings da más control sin dependencia externa.
+- **CSG** (`CSGBox3D`...): solo para greybox/prototipado de niveles; recalcula geometría cada frame, sin LOD/lightmap decente. Greybox con CSG → modela en Blender → reimporta como `.glb`. No shippees CSG como geometría final.
+
+**Veredicto ponytail:** el mejor código de importación es el que no escribes. Reúsa el `PackedScene` importado con `preload`/`load`, extrae materiales a `.tres` para editarlos en el editor en lugar de mutarlos por script, y deja que `RetargetModifier3D` + `SkeletonProfileHumanoid` + `BoneMap` hagan el retargeting nativo en vez de reescalar huesos a mano. La única línea de "código de import" legítima en runtime es `GLTFDocument` para mods/user-content; para todo lo demás, configura el Import dock y carga el resultado.
+
+## 13. Errores comunes y cómo desatascarse
+
+Esta sección es el **catálogo de atascos reales** de un RPG 3D en Godot 4.6, con el **mensaje literal**, la causa según el ciclo de vida del nodo, y el **fix con APIs exactas de 4.6**. La idea central: no memorices mensajes, entiende el **modelo de ejecución y de referencias** y cada error se vuelve obvio.
+
+### Enfoque nativo recomendado
+
+El 70% de los bugs se disuelven con cuatro conceptos canónicos de 4.6 y herramientas integradas (sin addons):
+
+| Concepto | Comportamiento documentado (4.6) |
+|---|---|
+| **Orden de inicialización** | `_init()` (constructor, árbol NO disponible) → asignación de `@onready var` → `_enter_tree()` → `_ready()`. `_ready` corre **bottom-up**: los hijos están listos ANTES que el padre. `$`/`get_node()` solo funciona dentro del árbol, nunca en `_init`. |
+| **`@onready`** | Garantiza solo que **tus propios hijos** existen justo antes de `_ready`. NO garantiza hermanos, padres ni autoloads. No cambia el orden bottom-up. |
+| **Hilo de física** | Toda mutación de cuerpos físicos (`velocity`, `move_and_slide`, `apply_force`) va en `_physics_process(delta)` (tick fijo, 60/s por defecto). `_process` es framerate variable. |
+| **`Object` vs `RefCounted`** | `Node` deriva de `Object`: libéralo con `queue_free()`, no se autolibera. `RefCounted`/`Resource` usa conteo de referencias; los **ciclos NO se rompen solos**. |
+| **`Callable` por identidad** | `connect`/`is_connected`/`disconnect` comparan por objeto+método (o misma instancia de lambda, o mismo `bind`). |
+
+Herramientas nativas de desatasco, en este orden: **Remote scene tree** (¿el nodo existe y se llama así?) → **Debugger > Stack Frames** → **Debugger > Monitors** (Object Count, Orphan Node Count) → arrancar con `--verbose` (reporte de fugas al salir).
+
+### GDScript
+
+Los tres atascos diarios (Nil, señal doble, await colgado) y sus fixes idiomáticos:
+
+```gdscript
+extends Node3D
+
+# --- 1. Nil / null instance: usa %UniqueName tipado para refs propias ---
+# ROTO:  @onready var hud = $UI/HUD            # ruta frágil + sin tipo -> null silencioso
+@onready var hud: Control = %HUD               # Scene Unique Name: sobrevive al re-parenting
+@onready var player: CharacterBody3D = %Player
+
+var target: Node3D                              # ref que puede morir (enemigo)
+
+func _ready() -> void:
+    # Referencias CRUZADAS (hermano/autoload/nodo dinámico): difiere, no las toques en _ready
+    _wire_cross_refs.call_deferred()
+
+func _wire_cross_refs() -> void:
+    var boss := get_tree().get_first_node_in_group("boss")
+    if is_instance_valid(boss):                 # guard canónico, siempre
+        boss.died.connect(_on_boss_died)
+
+func attack() -> void:
+    # tras queue_free el objeto NO se vuelve null: valida antes de tocar
+    if is_instance_valid(target) and not target.is_queued_for_deletion():
+        target.take_damage(10)
+    else:
+        target = null
+
+func _on_boss_died() -> void:
+    pass
+```
+
+```gdscript
+# --- 2. Señales: doble conexión y await que cuelga ---
+func _connect_once(s: Signal, c: Callable) -> void:
+    if not s.is_connected(c):                   # guard por identidad de Callable
+        s.connect(c)
+    # alternativa "una sola vez": s.connect(c, CONNECT_ONE_SHOT)
+
+# await sobre señal que puede NO emitirse (el atasco más cruel: no hay error, cuelga)
+func open_chest(anim: AnimationPlayer) -> void:
+    anim.play(&"open")                          # &"..." = StringName literal (4.6)
+    # carrera contra timeout: el primero que llegue desbloquea
+    var timer := get_tree().create_timer(2.0)
+    var done := [false]
+    anim.animation_finished.connect(func(_n): done[0] = true, CONNECT_ONE_SHOT)
+    await timer.timeout                          # garantiza salida aunque la señal nunca llegue
+    if done[0]:
+        pass # animación terminó normalmente
+```
+
+```gdscript
+# --- 3. Física en _physics_process, sin doble delta ---
+@export var speed := 6.0
+@export var gravity := 18.0
+var dir := Vector3.ZERO
+
+func _physics_process(delta: float) -> void:
+    velocity.x = dir.x * speed                   # SIN delta: move_and_slide lo aplica
+    velocity.z = dir.z * speed
+    velocity.y -= gravity * delta                # aceleración SÍ usa delta
+    move_and_slide()
+```
+
+```gdscript
+# --- 4. Mutar colección mientras se itera (bug silencioso: salta elementos) ---
+# ROTO:  for e in enemies: if e.dead: enemies.erase(e)
+func cull_dead(enemies: Array[Node3D]) -> Array[Node3D]:
+    return enemies.filter(func(e): return is_instance_valid(e) and not e.dead)
+    # o recorrido inverso por índice:
+    # for i in range(enemies.size() - 1, -1, -1):
+    #     if enemies[i].dead: enemies.remove_at(i)
+```
+
+```gdscript
+# --- 5. Tipado e inicialización + typed Dictionary 4.6 (trampa JSON) ---
+var damage: int = 0                              # tipa E inicializa: evita 'Invalid operands Nil and int'
+var loot: Dictionary[String, int] = {"gold": 10} # typed Dictionary (4.x, estricto en 4.6)
+
+func load_config(txt: String) -> void:
+    # ROTO: var d: Dictionary[String, int] = JSON.parse_string(txt)  # parse devuelve Dictionary[Variant,Variant]
+    var raw: Variant = JSON.parse_string(txt)    # parsea SIN tipar, castea tú
+    if raw is Dictionary:
+        for k in raw:
+            loot[String(k)] = int(raw[k])
+    # En lecturas que pueden faltar, usa get() (evita el error de operator[] de 4.6, GH-115624):
+    var g: int = loot.get("gold", 0)             # NO loot["gold"]
+```
+
+```gdscript
+# --- 6. Ciclo RefCounted: rompe con weakref en UNA dirección (hijo -> padre) ---
+class_name QuestStep extends RefCounted
+var _quest_ref: WeakRef                          # débil, no fuerte
+func set_quest(q: RefCounted) -> void:
+    _quest_ref = weakref(q)
+func get_quest() -> RefCounted:
+    return _quest_ref.get_ref() if _quest_ref else null   # null si ya se liberó
+```
+
+### C# (.NET 8)
+
+```csharp
+using Godot;
+
+public partial class PlayerController : Node3D
+{
+    private Node3D _target;
+    private Node3D _emitter;
+
+    public override void _Ready()
+    {
+        // Nil: GetNodeOrNull + guard. NUNCA GetNode en el constructor.
+        var hud = GetNodeOrNull<Control>("%HUD");
+        if (hud != null) hud.Visible = true;
+
+        // Refs cruzadas: difiere hasta que todo el arbol exista.
+        CallDeferred(nameof(WireCrossRefs));
+    }
+
+    private void WireCrossRefs()
+    {
+        _emitter = GetTree().GetFirstNodeInGroup("boss") as Node3D;
+        // Guard idempotente: usa SignalName.* (validado), no el string crudo (cuelga si hay typo).
+        if (_emitter != null && !_emitter.IsConnected(Node.SignalName.TreeExiting, Callable.From(OnEmitterGone)))
+            _emitter.TreeExiting += OnEmitterGone;
+    }
+
+    public void Attack()
+    {
+        // queue_free no anula la ref: valida antes de usar.
+        if (GodotObject.IsInstanceValid(_target))
+            _target.Call("take_damage", 10);
+    }
+
+    private void OnEmitterGone() { }
+
+    // C# NO desconecta solo todas las señales al liberar: hazlo aqui (evita NRE sobre nodo muerto).
+    public override void _ExitTree()
+    {
+        if (GodotObject.IsInstanceValid(_emitter) &&
+            _emitter.IsConnected(Node.SignalName.TreeExiting, Callable.From(OnEmitterGone)))
+            _emitter.TreeExiting -= OnEmitterGone;
+    }
+
+    // Fisica SIEMPRE en _PhysicsProcess; await sobre senal usa ToSignal con SignalName.*
+    public override async void _PhysicsProcess(double delta) { /* mover cuerpos aqui */ await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); }
+}
+```
+
+Nota C# 4.6 (StringName en AnimationPlayer, GH-110767): `current_animation`, `assigned_animation`, `autoplay`, el retorno de `GetQueue()` y el parámetro de la señal `current_animation_changed` pasaron de `String` a `StringName`. **Rompe binario y fuente en C#** (no en GDScript, que autoconvierte): actualiza tus comparaciones/asignaciones a `StringName`. Recuerda que **Web = Compatibility y sin C#**.
+
+### Shader (.gdshader)
+
+Breaking change 4.6 para shaders 3D custom (GLSL `SceneData`): `view_matrix` e `inv_view_matrix` pasaron de `mat4` a `mat3x4`. Si tu shader de agua/outline/niebla los usa, deja de tratarlos como 4x4 (rotación+traslación en 3x4) y transpón según convenga; de lo contrario la geometría sale deformada o no compila. Es el cambio que la guía oficial omitió al inicio (godot-docs#11744).
+
+### Pitfalls y mensajes de error literales
+
+- `Invalid get/set index 'X' (on base: 'Nil')` / `Cannot call method 'X' on a null value` (C#: `NullReferenceException`) → la ref es `null`. Causas por frecuencia: (a) ruta `@onready` mal escrita; (b) acceso a hermano/padre en `_ready` (bottom-up); (c) `get_node`/`$` antes de `add_child`; (d) `await` invalidó la ref.
+- `Attempt to call function 'X' on a previously freed instance` → guardaste ref a un nodo `queue_free`'d. Guard: `is_instance_valid(x)` (+ `is_queued_for_deletion()` dentro del mismo frame).
+- `Node not found: "<path>"` → typo, ruta absoluta `/root/...` fuera del árbol activo, o nodo aún no instanciado. Fix: `%UniqueName` o `get_node_or_null()` + guard.
+- `Signal 'X' is already connected to given callable` → doble `connect` (reentrada, escena heredada con conexión del editor). Fix: `is_connected()` o `CONNECT_ONE_SHOT`. Lambdas inline: `is_connected(func(): ...)` SIEMPRE da `false` (otra instancia); guarda la lambda en variable.
+- `Error calling from signal '<s>' to callable: ... Method expected N arguments, but called with M` → la firma del handler debe igualar args de la señal + args de `bind()` (los de `bind` van al final).
+- `await ... does not return a coroutine` (warning) o **cuelgue silencioso sin error** → `await` sobre no-corutina, o sobre una señal que nunca se emite (emisor liberado, typo en nombre de señal, `emit` en rama muerta).
+- `Identifier "X" not declared in the current scope` → typo/scope, o `class_name` recién creado no cacheado → **Project > Reload Current Project** (o borra `.godot/` y reabre).
+- `Class 'X' hides a global script class` / `class_name hides an autoload singleton` → `class_name` duplicado, o script embebido huérfano dentro de un `.tscn` (abre el `.tscn` como texto, busca `[sub_resource type="GDScript"]`).
+- `Invalid operands 'Nil' and 'int' in operator '+'` / `Cannot convert` / `Trying to assign value of type 'X'` → tipos sin inicializar o mezcla incompatible.
+- `Invalid assignment of property or key with value of type 'Dictionary'` → typed `Dictionary[K,V]` alimentado con `JSON.parse_string` (devuelve `Dictionary[Variant,Variant]`) o clave de tipo erróneo.
+- `Dictionary::operator[] used when there was no value for the given key` (regresión 4.6, GH-115624) → leer clave inexistente con `dict[key]` en contexto tipado. Fix: `dict.get(key, default)`.
+- Al cerrar: `ERROR: N RID allocations leaked` / `WARNING: ObjectDB instances leaked at exit` → fugas: `queue_free`, `RenderingServer.free_rid()` en `_exit_tree`, `weakref` para ciclos RefCounted.
+
+### Cómo no quedarte atascado (pasos de decisión)
+
+```
+NO COMPILA (rojo en el editor, no arranca)
+  "Identifier not declared"        -> typo/scope, o class_name no cacheado -> Reload Project / borra .godot
+  "class_name hides ..."           -> class_name duplicado o script embebido huerfano en .tscn
+  "Cannot convert" / "Invalid operands" / "assign type" -> tipos; Array[T] / Dictionary[K,V] / Nil
+  "Invalid assignment ... Dictionary" -> typed dict mal alimentado (JSON, clave erronea)
+  shader 3D custom no compila      -> SceneData view_matrix/inv_view_matrix mat4 -> mat3x4: adapta/transpon
+  APIs de Godot 3 (yield, .instance(), connect con strings) -> migrar a 4.x
+
+CRASHEA / spam de errores en runtime
+  "(on base: 'Nil')" / null instance / NRE -> @onready ruta (usa %UniqueName tipado) | hermano/padre en _ready (call_deferred) | get_node antes de add_child | ref liberada (is_instance_valid)
+  "Node not found: <path>"         -> %UniqueName / get_node_or_null + guard
+  "previously freed instance"      -> is_instance_valid + is_queued_for_deletion
+  "already connected to Callable"  -> is_connected guard / CONNECT_ONE_SHOT
+  "expected N arguments, called with M" -> firma handler = args senal + bind
+  "operator[] ... no value"        -> dict.get(k, default)
+  al cerrar: RID/ObjectDB leaked   -> queue_free / free_rid / weakref
+
+NO PASA NADA (corre sin error)
+  await colgado para siempre       -> typo en nombre de senal | emisor hizo queue_free | emit en rama muerta -> timeout / valida emisor / SignalName.*
+  senal "conectada" no dispara     -> print(sig.get_connections()) ; firma de args
+  fisica no mueve / input ignorado -> mutaste en _process (usa _physics_process) | _input vs _unhandled_input | collision_layer/mask
+  lista se salta elementos         -> mutar durante iteracion -> filter / duplicate / loop inverso
+
+VA LENTO / RAM sube
+  jitter al mover                  -> mover cuerpos en _physics_process; sin doble delta en move_and_slide
+  Orphan Node Count sube           -> Monitors + print_orphan_nodes(); instantiate/new sin add_child o remove_child sin queue_free
+  "ObjectDB instances leaked"      -> ciclo RefCounted -> weakref()
+```
+
+### Addon vs construirlo
+
+Casi todo es **construir, no addon**: los fixes son patrones de código + APIs base (`is_instance_valid`, `is_connected`, `weakref`, `print_orphan_nodes`, panel Monitors, `--verbose`). Un autoload propio `SignalBus`/`EventBus` de ~10 líneas con señales tipadas centraliza conexiones y elimina los dobles `connect` y las refs cruzadas frágiles. Para regresiones en CI sí vale un addon: **GUT** (GDScript) o **GdUnit4** (GDScript+C#), que además detecta orphan nodes por test. Para diálogos/quests con muchos `await`, construye una state machine propia (o Dialogic) en vez de encadenar `await` largos: son la fuente nº1 de cuelgues silenciosos.
+
+**Veredicto ponytail:** El mejor código anti-atasco es el que no escribes: apóyate en nodos y herramientas nativas antes de inventar. `%UniqueName` tipado en vez de rutas `$A/B/C/D` frágiles, `is_instance_valid()` antes de tocar referencias, `is_connected()`/`CONNECT_ONE_SHOT` en vez de tu propio registro de conexiones, `_physics_process` en vez de interpolación casera, y el panel **Monitors + `print_orphan_nodes()`** en vez de un profiler de memoria propio. Y la regla que ahorra horas: **antes de tocar nada, mira el Remote scene tree** — el 90% de los `on base: 'Nil'` se ve ahí sin escribir una línea.
+
+## 14. Depuración y profiling
+
+Un RPG 3D es el peor caso para depurar: cientos de nodos vivos, cambios de escena constantes (overworld ↔ combate ↔ menús), instanciado masivo de enemigos/loot/proyectiles y un autoload que sobrevive a todo. Aquí se acumulan los leaks y los lag spikes. Godot 4.6 trae herramientas integradas potentes (ObjectDB Profiler, Visual Profiler, Tracy/Perfetto/Instruments oficiales, botón Step Out); el error que atasca a una IA es ignorarlas y "tirar prints".
+
+### Enfoque nativo recomendado
+
+No construyas un sistema de depuración propio. En 4.6 todo lo que necesitas ya viene integrado. Pirámide canónica, en orden:
+
+1. **Errores/warnings del panel Debugger** (pestaña *Errors*): clic en el error salta a la línea con stack expandible.
+2. **Breakpoints + stepping** (F9 / palabra clave `breakpoint`), ahora con **Step Out** (nuevo en 4.6).
+3. **Backtraces programáticos** (`print_stack`, `get_stack`, `print_debug`).
+4. **Monitors + Profiler + Visual Profiler** para lag.
+5. **ObjectDB Profiler** (nuevo en 4.6) para leaks / orphan nodes.
+6. **Tracy / Perfetto / Apple Instruments** (oficiales en 4.6) para microsegundos por hilo, solo cuando el cuello de botella está en el engine.
+
+**Decisión rápida — cuelgue vs lag (son dos flujos distintos):**
+
+- **HANG (freeze total):** casi siempre bucle infinito o recursión de señales (A emite B, B reemite A). El stepping no ayuda si ya colgó. Corre desde terminal con `godot --verbose --path /ruta` y mira la última línea antes del freeze; pon un `breakpoint` antes de la sección sospechosa y haz Step Over; mete un contador guardia (`assert(_guard < 100000, ...)`).
+- **LAG (FPS cae, responde):** Monitors → ¿sube *memory*, *nodes*, *orphans*, *draw calls*? Luego Visual Profiler para saber si es **CPU (izquierda) o GPU (derecha)**, y solo entonces el Profiler integrado ordenado por **Self Time** (no Total Time).
+
+### El enemigo #1 del RPG: orphan nodes y ciclos RefCounted
+
+El leak más común no es C++ ni texturas: es `remove_child()` sin `queue_free()`, o un nodo instanciado que nunca entra al árbol. Diferencia clave que origina la mayoría de leaks:
+
+- `queue_free()` saca del árbol Y libera al final del frame.
+- `remove_child()` **solo desvincula**; el nodo sigue vivo como orphan hasta que lo `free()`/`queue_free()` o lo reparentes. Pooling con `remove_child` es correcto **solo si** conservas la referencia para reusarlo.
+- **Regla de oro:** nunca `extends Node` en algo que no metes en el SceneTree. Una clase de datos/utilidad debe ser `extends RefCounted` (se libera por conteo) o `Resource`.
+- **Ciclo RefCounted** (A→B→A): el refcount nunca llega a 0; `queue_free` no aplica. Rómpelo con `weakref()` en una de las direcciones.
+
+**Flujo 4.6 (ObjectDB Profiler, pestaña nueva en el panel Debugger):** toma un *snapshot* en el overworld → entra y sal de combate varias veces → toma otro snapshot → **diff**. Lo añadido sale en **verde**, lo eliminado en **rojo**; los orphans se agrupan aparte (no cuelgan de la raíz). Esto te da la **clase exacta** que no se libera. Vistas: *Nodes* (árbol + huérfanos), *RefCounted* (resalta ciclos), *Summary* (marca problemas). Complemento programático: `print_orphan_nodes()`. Al cerrar el juego, `ERROR: ObjectDB instances leaked at exit (run with --verbose for details)` confirma un leak; relanza con `--verbose` para el stack de creación.
+
+### GDScript
+
+Ver ejemplo completo `debug_tools.gd` (custom monitors, backtraces, asserts, toggles de visualización, chequeo de leaks).
+
+### C# (.NET 8)
+
+Ver ejemplo `DebugTools.cs`. Nota: **web NO tiene C#** (renderer Compatibility); si exportas a web, todo el debug en C# desaparece, usa GDScript. `assert` de GDScript no existe en C#: usa `System.Diagnostics.Debug.Assert` (también se elimina en build Release, mismo riesgo de side-effects).
+
+### Pitfalls y mensajes de error literales
+
+- **`assert()` se strippea COMPLETO en release.** Si metes lógica con efectos secundarios (`assert(spawn_enemy())`), funciona en el editor y **el enemigo nunca aparece en el export**. Además `assert` es palabra clave, no función: no la uses como expresión (`var a = assert(...)` → error de parser) y el segundo argumento debe ser un String constante.
+- **`get_stack()` / `print_stack()` / `print_debug()` devuelven vacío o no hacen nada sin servidor de debug.** No funcionan en release, ni en build debug exportada no conectada, ni desde un `Thread`. Para release/crash reports activa `ProjectSettings → debug/settings/gdscript/always_track_call_stacks` (+ `Engine.capture_script_backtraces()`). Salvedad verificada (godot#106484): en exports release los números de línea del backtrace son incorrectos (apuntan a la firma de la función) — usa `function`, no `line`.
+- **Firma OBSOLETA de Godot 3 en `add_custom_monitor`** — el error que más comete una IA: `add_custom_monitor("Player Health", self, "_get_health")`. En Godot 4 es `(id: StringName, callable: Callable, arguments := [])`. La vieja produce `Invalid type in function 'add_custom_monitor': argument 2 should be Callable`. Pasa un Callable: `_get_health` en GDScript, `new Callable(this, MethodName.X)` o `Callable.From(...)` en C#.
+- **`Custom monitor 'X' already exists.`** Re-registrar el mismo id (autoload que sobrevive, `_ready()` que corre dos veces tras reparenting). Protégete con `if not Performance.has_custom_monitor(id):` y limpia en `_exit_tree()`.
+- **El callable de un monitor debe devolver número >= 0.** Devolver String/null/negativo rompe la gráfica en silencio (los negativos se clampean a 0). No hagas trabajo pesado dentro: se llama periódicamente (observer effect).
+- **"Mis breakpoints no pausan."** Causas en orden: *Skip Breakpoints* activado (botón pegado entre sesiones); corriendo en export release / sin conexión al editor; breakpoint en un `Thread` secundario; línea no ejecutable. Verifica sesión activa en el panel Debugger; lanza con F5 **desde el editor Godot**, no desde VSCode (el Remote scene tree no aparece vía VSCode — godot-vscode-plugin#567).
+- **Profiler vs Visual Profiler (error de categoría).** Profiler = tiempo CPU por función/script. Visual Profiler = coste del **renderer por frame** (GPU/render passes). Usar el equivocado persigue el cuello de botella incorrecto. Olvidar pulsar **Start** → "el profiler está vacío" (no graba por defecto).
+- **`debug_collisions_hint` por código en runtime a menudo NO dibuja** si el menú del editor estaba OFF (godot#64353): el menú y la propiedad chocan. Usa **uno solo**: para depuración manual, el menú *Debug → Visible Collision Shapes*; para builds de debug, setea la propiedad **antes del primer frame físico** (togglear en caliente no re-genera shapes ya creados). En exports, `CollisionPolygon2D` solo muestra contorno (godot#99935 — no es tu bug). Desactiva estas visualizaciones antes de medir frame time.
+- **"El Visual Profiler muestra tiempos CPU raros / Process tarda muchísimo sin justificación"** (godot#97473, #81435): a veces es tiempo de sincronización del frame contabilizado dentro de Process, o tiempos CPU del Visual Profiler poco fiables. Confirma con Self Time y un monitor de FPS. En **macOS/Metal el frametime GPU integrado está roto** (godot#102968): usa Apple Instruments.
+- **"Solo es lento en debug."** El debugger remoto añade overhead por nodo/llamada (foro "DEBUG in 4.5 is unusable"; godot#78754). **Antes de optimizar, mide con un export `template_release`.** Si el spike desaparece, era el debugger, no tu juego.
+- **Spike de "primera vez"** (primer disparo / primer enemigo / primera escena de combate): carga lazy de recursos y **compilación de shaders**. Fix: `preload()` y shader pre-warming (instancia el material una vez fuera de cámara en la pantalla de carga).
+- **Tracy no conecta:** requiere recompilar Godot con soporte de profiling (`tracy_enable=yes`), no sirve el binario oficial de release; la versión del viewer debe coincidir con el build. Sin `-fno-omit-frame-pointer -fno-inline -ggdb3` el callstack sale inútil.
+
+### Cómo no quedarte atascado (checklist de decisión)
+
+1. ¿Estás en **debug build conectada al editor** (F5)? Si no, breakpoints/`get_stack`/`print_stack`/`print_debug` no van.
+2. ¿`Skip Breakpoints` activado por accidente?
+3. ¿Solo pasa en debug? → mide en export release antes de tocar código.
+4. Lag → Visual Profiler: ¿CPU (izq) o GPU (der)? Luego Profiler por **Self Time**.
+5. ¿Usaste la firma **Callable** de `add_custom_monitor` (no objeto+string de Godot 3)? ¿El callable devuelve número >= 0? ¿Pulsaste **Start** en el Profiler?
+6. Memoria crece → Monitors (orphan/object count) → **ObjectDB snapshot diff** → arregla `queue_free`/ciclos RefCounted. Un orphan NO aparece en el Remote scene tree (no está en el árbol) — míralo en el ObjectDB Profiler. No confíes en `get_orphan_node_ids()` (incompleto, godot#114854).
+7. Cuelgue → `--verbose` + buscar bucle/señal recursiva + `breakpoint`.
+8. ¿`assert()` con side-effects (se elimina en release) o usado como expresión?
+9. Web: sin C#, Compatibility, conexión remota frágil → `--verbose` + consola del navegador.
+
+### Addon vs construirlo
+
+- **No construyas** un sistema de profiling propio: ObjectDB Profiler, Visual Profiler, Monitors y soporte Tracy/Perfetto/Instruments ya vienen integrados en 4.6. Construir era justificado en 3.x; en 4.6 es reinventar la rueda.
+- **Sí construye tus custom monitors** con `Performance.add_custom_monitor` (enemigos vivos, tamaño del pool de proyectiles, entradas del caché de pathfinding, items de inventario): es API oficial, barato, se integra en la pestaña Monitors, y te permite **correlacionar el spike con tu dominio** ("el spike coincide con 120 enemigos vivos → spawner sin tope"). Instrúmentalo desde el día 1.
+- **Addon recomendado** solo para HUD in-game de métricas en builds de QA sin editor conectado: **godot-debug-menu** (asset library #1902).
+- **Tracy** solo cuando el integrado dice "está en render/física" pero no sabes qué función, o necesitas resolución por hilo (Jolt corre física en hilos). En **macOS**, Apple Instruments para GPU.
+
+**Veredicto ponytail:** el mejor sistema de depuración es el que no escribes. 4.6 ya trae ObjectDB Profiler con snapshot diff, Visual Profiler CPU/GPU, Step Out y Tracy/Perfetto/Instruments oficiales — todo nativo. Lo único que vale la pena escribir tú son cuatro líneas de `add_custom_monitor` por cada métrica de tu RPG, porque el engine mide el engine y tú tienes que medir tu juego. Antes de optimizar nada, verifica que el problema no sea solo el overhead del debugger: exporta en release y vuelve a medir.
+
+## 15. C# .NET 8 a fondo
+
+Godot 4.6 (publicado 2026-01-27, ~4.6.3) ejecuta C# sobre **.NET 8 (LTS)**. Mono fue descontinuado: el runtime es .NET 8 puro. Hay tres choques que atascan a CASI todo dev/IA que llega de Unity, ASP.NET o GDScript, y conviene tratarlos como el núcleo del tema: (1) **source generators + `partial`**, (2) **marshalling vía Variant**, (3) **ciclo de vida `GodotObject` vs GC de .NET**. Una IA construyendo un RPG se queda atascada SIEMPRE en los mismos sitios; abajo van con su mensaje literal y su desatasque.
+
+### Enfoque nativo recomendado
+
+Antes de elegir lenguaje, una restricción dura que decide la arquitectura: **el web NO soporta C# en 4.6** (el export web usa el renderer Compatibility, que no embebe runtime .NET; issue abierto GH-70796). No hay flag que lo arregle. Si tu RPG 3D apunta a navegador, el core jugable va en GDScript o haces doble export.
+
+Recomendación de reuso (ponytail) por encima de escribir código:
+- **No escribas un `.csproj` a mano.** Deja que Godot lo cree: **Project > Tools > C# > Create C# solution**. El `Sdk="Godot.NET.Sdk/4.6.x"` y el `<TargetFramework>net8.0</TargetFramework>` los pone bien y evitas mismatches de versión.
+- **No reimplementes señales/observabilidad ni reflexión de exports**: los source generators del `Godot.NET.Sdk` ya generan `SignalName`/`MethodName`/`PropertyName`, el helper `EmitSignalXxx`, y el registro de `[Export]`. Vienen dentro del SDK, no necesitas addon.
+- **No reinventes async/corrutinas para gameplay simple**: `ToSignal` + un `CancellationTokenSource` basta. Solo para secuencias serias de combate/cinemáticas considera el addon GDTask.
+- **Para datos hereda de `Resource`/`RefCounted`** (autogestión por refcount) y reserva `Node` para el árbol de escena. Menos código de liberación manual = menos `ObjectDisposedException`.
+
+Cuándo C# y cuándo GDScript en un RPG 3D (consenso 2025-2026, ya no es "C# = rápido"):
+- **C#** para el core CPU-intensivo: sistema de stats, IA de combate por turnos con muchas iteraciones, RNG determinista, A*/pathfinding a gran escala, serialización de saves grandes, y si el equipo viene de .NET (tooling Rider/VS, tests, generics).
+- **GDScript tipado** para nodos de escena, UI, glue, hot-reload, y es el **único camino a web**.
+- **Regla anti-atasco transversal:** cada cruce de la frontera C#↔engine paga marshalling Variant. No cruces en bucles calientes: cachea nodos en `_Ready` (no en `_Process`), y copia un `Godot.Collections.Array` a un `T[]`/`List<T>` de System antes de iterar miles de veces.
+
+### GDScript
+
+```gdscript
+extends CharacterBody3D
+@export var speed: float = 6.0
+signal health_changed(old_hp: int, new_hp: int)
+var hp := 100
+
+func _physics_process(delta: float) -> void:
+    velocity.x = Input.get_axis("left", "right") * speed
+    move_and_slide()
+
+func damage(amount: int) -> void:
+    var old := hp
+    hp -= amount
+    health_changed.emit(old, hp)
+
+func _ready() -> void:
+    await get_tree().create_timer(1.5).timeout
+    if is_instance_valid(self):
+        position = Vector3.ZERO
+```
+
+### C# (.NET 8)
+
+Ver bloque de ejemplos (`Player.cs`, `Inventory.cs`, `Game.csproj`). Puntos idiomáticos que NO son "GDScript traducido":
+- **`delta` es `double`** en los overrides de C# (`_Process(double)`, `_PhysicsProcess(double)`), no `float`. Castea con `(float)delta` cuando lo multipliques por floats.
+- API en **PascalCase**: `MoveAndSlide()`, `GetNode<T>()`, `_Ready()`, `Velocity`.
+- Emite señales con el **helper tipado generado** `EmitSignalHealthChanged(old, hp)` (wrapper sobre `EmitSignal(SignalName.HealthChanged, ...)`); evita el string mágico `EmitSignal("HealthChanged", ...)`.
+- `Velocity = Velocity with { X = ... }` (records/`with` de C# sobre el struct `Vector3`).
+
+### Pitfalls y mensajes de error literales
+
+**Build / toolchain (atasco día 1):**
+- `error MSB4236: The SDK 'Godot.NET.Sdk/4.6.x' specified could not be found.` → (a) no hay **.NET 8 SDK** en el PATH de la sesión que lanzó Godot (clásico: PATH OK en SSH pero no en la sesión GUI). `dotnet --list-sdks` debe mostrar un 8.x. (b) Estás usando el binario **estándar** en vez de la build **".NET"/"Mono"** (`Godot_v4.6-stable_mono_*`); el editor estándar no abre proyectos C#. (c) El feed `nuget.org` no resuelve `Godot.NET.Sdk` (el primer restore necesita red). (GH-58955)
+- `CS0246: The type or namespace name 'Vector3I' could not be found` → casi siempre `bin/`+`obj/` corruptos tras cambiar de versión de Godot, o nombre mal escrito (en 4.x es `Vector3I`/`Vector2I`, PascalCase). Borra `.godot/mono`, `bin/`, `obj/`, rebuild. (GH-68411)
+
+**Source generators / `partial`:**
+- `GD0001: Missing partial modifier on declaration of type '...' that derives from 'GodotObject'` → añade `partial`. Toda clase que derive de `GodotObject` (incl. `Node`, `Resource`, `RefCounted`) lo necesita, **y todas las clases de una jerarquía de herencia y todos los `partial` de archivos múltiples**.
+- `GD0002` → la clase contenedora de una clase Godot anidada también debe ser `partial`.
+- **Niche (GH-104268):** una clase Godot **anidada dentro de una clase genérica** rompe los source generators con errores crípticos aunque pongas `partial` en todo. No está soportado. Desatasque: saca la clase al namespace de nivel superior.
+- **`SignalName.X` marcado como `CS0246` por el IDE pero compila** → el generador emite el miembro y el language server (OmniSharp/Rider) está desincronizado. Fix: `dotnet build` desde terminal, reinicia el servidor de lenguaje, borra `obj/`+`bin/`. NO recurras al string mágico para "callarlo". (GH-81674, GH-82268)
+
+**Señales:**
+- `GD0201: The name of the delegate must end with 'EventHandler'` → `delegate void DiedEventHandler(...)`.
+- `GD0202: The parameter of the delegate signature of the signal is not supported` → un parámetro no es Variant-compatible (`List<int>`, POCO custom, `System.Action`). Cámbialo a tipo Variant o hazlo derivar de `Resource`/`GodotObject`.
+- `GD0203` → el delegate de señal debe retornar `void`.
+- **(GH-82268)** emitir una señal definida en OTRA instancia desde fuera con el helper tipado no se puede directamente; llama a un método de esa instancia que emita la suya.
+
+**Marshalling / colecciones / genéricos:**
+- `GD0102: The type of the exported member is not supported` → no puedes exportar `System.Collections.Generic.List<T>` (GH-70298), ni arrays de `Vector2I/3I/4I` (GH-95358), ni arrays de enums (GH-95813). Usa `Godot.Collections.Array<T>`.
+- `GD0301: The generic type argument must be a Variant compatible type` y `GD0302: The generic type parameter 'T' must be annotated with the '[MustBeVariant]' attribute` → en métodos genéricos que tocan Variant: `void Foo<[MustBeVariant] T>(T v)`.
+- **Niche (GH-91345):** `CSC : warning AD0001: Analyzer 'Godot.SourceGenerators.MustBeVariantAnalyzer' threw an exception` → suele venir de usar `dynamic` o patrones genéricos que el analizador no maneja. Evita `dynamic` en superficies que tocan Variant; usa tipos concretos o `Variant.From<T>()`/`.As<T>()`.
+- **Trampa de copia (GH-42484):** leer un valor-tipo de un `Godot.Collections.Dictionary` puede devolver una **copia**; mutarla no afecta al diccionario. Lee, muta, **reescribe**: `dict[key] = modified`.
+- **Verificar, no asumir:** circula un reporte de `[Export] Array` que aparece **vacío en el build exportado** por trimming/stripping agresivo. No está confirmado como bug general de 4.6.3; trátalo como check: valida exports/colecciones en un **build exportado real**, no solo en editor.
+
+**Ciclo de vida (compila perfecto, crashea en runtime — el más insidioso):**
+- `System.ObjectDisposedException: Cannot access a disposed object. Object name: 'Godot.Node3D'.` → guardaste una ref C# a un `Node` que se liberó (`QueueFree`/cambio de escena/padre destruido). **`IsInstanceValid` es la única forma correcta de chequear vida; NO compares contra `null`** (la ref managed puede seguir no-null sobre un objeto nativo muerto). Patrón:
+  ```csharp
+  if (GodotObject.IsInstanceValid(_target) && !_target.IsQueuedForDeletion())
+      _target.GlobalPosition = pos;
+  ```
+- **`Dispose()` ≠ `Free()`:** `Dispose()` suelta solo el handle managed, no destruye el objeto nativo, y sobre un `Node`/`TreeItem` puede causar leaks o dobles liberaciones. Usa `QueueFree()`/`Free()` para nodos; nunca `Dispose()` manual de nodos. (GH-86926, GH-107579; fix RefCounted GH/PR-101006)
+- **Niche (GH-89105):** `IsInstanceValid` no rastrea bien la disposición cuando se llama dentro de un `CallDeferred` disparado desde código async/multihilo: puede devolver `true` y aun así lanzar. Marshalla todo el toque de nodos al hilo principal con `CallDeferred`/`Callable.From(...).CallDeferred()` y **revalida dentro** del deferred.
+
+**async/await:**
+- `ToSignal(source, signal)` devuelve un `SignalAwaiter` (no un `Task`); se usa con `await` pero no compone directo con `Task.WhenAll`. Espera frame: `await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);`. Espera timer: `await ToSignal(GetTree().CreateTimer(1.5f), SceneTreeTimer.SignalName.Timeout);`.
+- **El disposed mid-await:** tras un `await` el nodo pudo morir. Revalida `IsInstanceValid(this)` tras CADA await, o usa un `CancellationTokenSource` cancelado en `_ExitTree()`. `ToSignal` aún no acepta `CancellationToken` nativo (proposals GH-11909 / discussion GH-7993).
+- No mezcles `Task.Delay` (hilo del threadpool) con toques a nodos sin volver al hilo principal; `ToSignal` ya resuelve en el hilo del engine.
+- **(GH-93608)** una corrutina async puede correr un frame más tras `QueueFree`; no asumas corte inmediato.
+
+**NativeAOT / móvil:**
+- Desktop: `<TargetFramework>net8.0</TargetFramework>` + `<PublishAOT>true</PublishAOT>`. Android/iOS: **experimental**; iOS solo exporta desde **macOS + Xcode**, simulador x64; **no cross-OS compile**.
+- Trimming rompe rutas de reflexión que Godot usa: corre en editor, crashea al cargar tipos en el build AOT. Añade `TrimmerRootAssembly` para `GodotSharp` y tu assembly.
+- **(GH-102747)** el publish AOT falla con **espacios en el nombre del proyecto**. Renombra sin espacios.
+- **Web no se salva con AOT: C# sigue sin web en 4.6.**
+
+### Cómo no quedarte atascado (pasos de decisión, en orden de fallo real)
+
+1. **¿Web en el roadmap?** Sí → C# queda casi descartado para el core jugable; usa GDScript. No → sigue.
+2. **¿Editor build ".NET/Mono"? ¿`net8.0` en el `.csproj`? ¿`dotnet 8` en el PATH de la sesión GUI?** Si el build no resuelve `Godot.NET.Sdk`, esto es lo primero.
+3. **¿Toda clase Godot es `partial`** (y sus contenedoras)? GD0001/GD0002.
+4. **¿Lo que cruza al engine** (señales, `[Export]`, genéricos) es **Variant-compatible**? `Godot.Collections.*` en fronteras, `System.Collections.*` solo interno. `[MustBeVariant]` en genéricos. GD0102/GD0202/GD0301/GD0302.
+5. **¿`IsInstanceValid` (+ `IsQueuedForDeletion`)** antes de tocar refs cacheadas, tras cada `await`, y **dentro** de deferreds? `QueueFree`, nunca `Dispose()` manual de nodos.
+6. **¿`SignalName.X` da CS0246 fantasma?** Rebuild + reset language server, no string-magic.
+7. **¿AOT/móvil?** root assemblies, sin espacios en el nombre, target net8, experimental.
+
+### Addon vs construirlo
+
+- **No necesitas addon** para lo canónico: source generators (`[Export]`, `[Signal]`, `SignalName`/`MethodName`/`PropertyName`, helpers `EmitSignalXxx`) y los analizadores GDxxxx **vienen dentro de `Godot.NET.Sdk`**.
+- **Opcional, reduce boilerplate de `GetNode`:** `GodotSharp.SourceGenerators` (Cat-Lips) o `godot-tscn-source-generator` (estilo `@onready`). No imprescindibles.
+- **Opcional, async serio:** `GDTask` (Fractural, port de UniTask) para `GDTask`, delays sin alocar y cancelación integrada en cinemáticas/secuencias de combate encadenadas. Para 2-3 awaits sueltos, `ToSignal` + `CancellationTokenSource` es suficiente — no metas la dependencia.
+
+**Veredicto ponytail:** el mejor código C# en Godot 4.6 es el que NO escribes: deja que Godot genere el `.csproj`, que los source generators generen señales/exports, que `Resource`/`RefCounted` se autogestionen por refcount, y que `ToSignal` cubra el async simple. El código que SÍ debes escribir es el "core" CPU-intensivo (stats, IA, saves) que justifica salir de GDScript. Y memoriza tres reflejos: `partial` en toda clase Godot, `Godot.Collections.*` en las fronteras del engine, e `IsInstanceValid` antes de tocar cualquier ref que pudo morir. Esos tres reflejos evitan el 90% de los atascos.
+
+## Filosofía aplicada: construir vs reusar y cómo no quedarte atascado
+
+Las cinco posturas, por debajo de su retórica, dicen lo mismo con distinto acento: **en Godot 4.6 ya tienes una arquitectura de fábrica** (árbol de escenas, señales, `Resource` tipados, autoloads, Jolt, `SkeletonModifier3D`/IK, `NavigationAgent3D`). Tu trabajo no es reconstruir eso, sino *cablearlo* y escribir solo las **reglas de tu juego**. El desacuerdo real no es "reusar o construir" — todas dicen "reusar el mecanismo del engine" — sino **dónde y cuándo pones tu propia costura tipada**, y eso es lo que esta síntesis calibra.
+
+### Principios (lo que las 5 firman)
+
+1. **Reusa el mecanismo, posee el vocabulario.** Física, animación, IK, navegación, serialización: del engine, intactos. HP, daño, quests, loot, iniciativa de combate: tuyos, escritos de verdad. Confundir ambos produce los dos fracasos gemelos — *infra-diseño* (pegar nodos sin lógica de dominio donde hace falta) y *sobre-diseño* (frameworks caseros que reimplementan el engine peor).
+2. **Datos en `Resource` tipado; comportamiento en nodos-componente; nunca los mezcles.** Un `ItemDef extends Resource` es el *qué*; un `WeaponComponent extends Node` es el *cómo*. Usa `Array[T]` y `Dictionary[K,V]` tipados (estables en 4.6) en los `@export`.
+3. **Composición sobre herencia.** Techo duro: **2 niveles de herencia** (uno de ellos suele ser la clase de engine, p.ej. `Actor extends CharacterBody3D`). Más allá, compón con nodos-componente. `@abstract` (4.5+) es para *contratos* (`State`, `Ability`), no para torres de abstracción.
+4. **Señales locales primero; bus global solo para hechos de dominio N×M.** Cablea directo mientras el árbol te dé acceso. Un `EventBus` autoload transporta *hechos* (`entity_died`), no comandos de UI ni eventos entre dos hermanos.
+5. **Referencia por `id: StringName` estable, no por path ni por objeto.** Los saves y la red sobreviven a mover archivos solo si la clave es estable. (El propio 4.6 movió props de animación de `String`→`StringName`: sigue esa lógica para *tus* claves.)
+6. **El árbol es la documentación.** Un `.tscn` componible se lee de un vistazo; una jerarquía profunda obliga a abrir 4 archivos. Esto importa especialmente para un agente de IA que debe reconstruir el modelo mental sin adivinar.
+
+### Tabla de decisión: reusar vs construir
+
+| Necesidad | Acción | Por qué |
+|---|---|---|
+| Física, character controller | **Reusa** `CharacterBody3D.move_and_slide()` sobre Jolt (default 3D en 4.6) | El engine lo testea en C++ cada release |
+| IK (pies en terreno, mano agarra arma) | **Reusa** el solver más simple: `TwoBoneIK3D` (2 huesos), `FABRIK3D`/`CCDIK3D` (cadenas) | Nunca escribas tu propio solver; `JacobianIK3D` solo si lo mides necesario |
+| Máquina de estados de locomoción (idle/run/jump) | **Reusa** `AnimationTree` + `StateMachine` (grafo) | Evita el `match state:` de 200 líneas y el breaking change `String`→`StringName` |
+| Navegación / pathfinding | **Reusa** `NavigationAgent3D` + `NavigationRegion3D` | No escribas A\* propio |
+| Serialización / save | **Reusa** `ResourceLoader`/`ResourceSaver` con datos como `Resource` | Versionan, cachean y referencian gratis |
+| Definición de item/quest/skill | **Construye** un `Resource` tipado (`.tres`) por entrada | Editable en Inspector, testeable, escala por *append* |
+| Estado mutable de runtime (HP actual, stack count) | **Construye** un tipo *aparte* (`ItemStack`, no `ItemDef`); jamás muta la definición | El `Resource` definición es plantilla inmutable compartida |
+| Reglas de combate, turnos, iniciativa | **Construye** GDScript propio, y hazlo bien | Es tu propiedad intelectual; el engine no la tiene |
+| Comunicación padre↔hijo / hermanos | **Reusa** señal local directa, cableada en `_ready` del actor | Tipada, refactorizable por el editor, un solo punto de cableado |
+| Comunicación entre sistemas lejanos (kill→quest+UI+logros) | **Construye** `EventBus` autoload de señales — *solo si* hay N×M real | Si hay 1 emisor + 1 receptor, conecta directo: el bus solo añade un salto y borra el tipo |
+| Índice de contenido (cientos de items) | **Construye** un autoload `Database` de **solo lectura** que escanea carpeta | Añadir item = soltar un `.tres`, cero código tocado; nunca un `match id:` |
+| Envolver un literal de string mágico | **Construye** una constante (`const ATTACK := &"attack"`) **solo** si aparece en ≥3 sitios o cruza subsistemas | Una sola aparición local no justifica una clase |
+
+### Checklist anti sobre-diseño (señales de que SOBRA)
+
+- La clase/nodo/autoload tiene **exactamente un usuario** → es un método que se fue de casa. Vuelve.
+- No puedes **nombrar la tercera instancia concreta** que usará la abstracción → es ficción.
+- La indirección **no elimina ningún acoplamiento real**, solo lo mueve (EventBus con 1 emisor y 1 receptor).
+- El autoload **solo crece y nunca encoge** → va camino del God-`GameManager` de 1.200 líneas.
+- Estás construyendo un "sistema genérico extensible de X" **antes de tener un solo X funcionando**.
+- Pusiste una capa (`PhysicsWrapper`, `InputAbstraction`) "por si cambiamos de motor" → no vas a cambiar de motor.
+- Tienes `ItemDef` + `ItemStack` + `ItemView` para una mecánica que **podrías descartar mañana** → prototipa inline, promueve a arquitectura cuando sobreviva.
+
+### Checklist anti infra-diseño (señales de que FALTA)
+
+- Combate, inventario y diálogo viven en el `_process` del `Player` → ya pasaste la regla de tres, es una bola de barro.
+- Stats/items como **campos de un singleton** o `Dictionary` crudos (`{"hp":100}`) → no editables en Inspector, no testeables, claves mágicas que fallan en runtime, no en compilación.
+- El **estado de verdad vive en el árbol de nodos** (HP leído del nodo de malla) → save/load y multijugador imposibles sin reescribir.
+- Referencias por **path frágil** (`$"../../Player/Health"`) regadas por el código.
+- **Pegas nodos sin escribir las reglas del dominio** donde el engine no las tiene (combate por turnos con reacciones no es un nodo).
+
+### La costura preventiva que SÍ se adelanta
+
+Hay un único boundary que conviene *dibujar* desde el día 1 aunque no lo necesites aún, porque retrofitearlo es explosivo (toca N sistemas), no lineal: **estado serializable vs presentación**. Los datos nacen como `Resource` con `id` estable a un lado; modelos, `AnimationTree`, partículas, IK (`LookAtModifier3D`) al otro, y la presentación se reconstruye desde el estado, nunca al revés. El resto (EventBus, clase base de `Ability`, `StateMachine` reutilizable) **no se adelanta**: nace a la tercera repetición concreta y nace con su test.
+
+El test que zanja cualquier duda de escala: *"para añadir el contenido número N, ¿tengo que abrir un archivo existente?"* Si no → escalaste bien. Si sí → o sobre-diseñaste una abstracción inútil, o infra-diseñaste y ahora repintas.
+
+### Guía anti-stuck para un agente de IA
+
+Heurísticas de decisión rápida (cuando dudes, elige la opción donde el siguiente lector entiende el flujo *sin abrir un segundo archivo*):
+
+- **¿Tipo de cosa o instancia única global?** Tipo → `class_name` + `Resource`. Instancia única → autoload. (Máx ~3 autoloads al arranque: `Save`, `SceneRouter`, quizá `EventBus`/`AudioDirector`. Nunca un `GameManager`.)
+- **¿>5 variantes o contenido autoral, o ≤5 y fijo?** >5/autoral → `Resource` + Database. ≤5 fijo → `enum` + código directo. No montes un pipeline de datos para 3 casos.
+- **¿Notificar o consultar?** Notificar (fire-and-forget) → señal. Necesitas un valor de vuelta ya (`can_afford(cost) -> bool`) → llamada directa tipada.
+- **¿La cadena `extends` propia pasa de 1 nivel sobre el engine?** → conviértelo en composición.
+- **¿El literal/abstracción aparece <3 veces?** → no lo envuelvas todavía.
+
+Qué hacer cuando algo no funciona (romper el bucle):
+
+1. **Antes de escribir, busca el nodo nativo.** El 90% de "necesito programar X" en infraestructura ya es un nodo. Si reescribiste un solver de IK o un loop de física, deshazlo.
+2. **Si un campo aparece "de la nada" (`velocity`, `hp`), el árbol y los tipos son la verdad** — no infieras, observa el `.tscn` y el `class_name`. Si para entenderlo tienes que leer 4 archivos, la jerarquía está mal: aplana a composición.
+3. **Si un error de coerción aparece en runtime y no en compilación**, sospecha de string mágico (`play("attack")`) o `Dictionary` no tipado como payload. Tipa la costura.
+4. **Si te atascas configurando**, no toques defaults (`ssr_depth_tolerance`, etc.) hasta ver el artefacto real. Configurar prematuramente es escribir código por otros medios.
+5. **Si dudas entre dos diseños, elige el más pequeño y duplica el código.** Extrae a la segunda repetición dolorosa, no antes. La extracción especulativa es exactamente lo que infla el proyecto hasta atascarte en tu propio andamiaje.
+6. **Plataforma manda y se decide temprano:** si el target es web → renderer `Compatibility` y **sin C#**: todo el core en GDScript. No diseñes en .NET lo que correrá en navegador.
+7. **Performance: cede solo con profiler en mano.** Nodo-componente + señales es correcto para protagonista + decenas de NPCs. Para miles de entidades (hordas, auto-battler) cede a arrays planos / `MultiMeshInstance3D` / servidores directos — pero solo tras medir, nunca a priori.
+
+**Síntesis operativa:** *Datos en `Resource` tipado, comportamiento en nodos-componente componibles, infraestructura en sistemas nativos (Jolt, `AnimationTree`, IK, navegación), comunicación por señales locales y un EventBus solo para hechos N×M. Referencia por `id` estable. Dibuja la frontera estado/presentación el día 1; todo lo demás nace a la tercera repetición, con test. Escribe GDScript propio solo para las reglas del juego — y ahí, escríbelo de verdad.*
+
 ## Estructura mínima de proyecto libre
 
 ```
