@@ -90,10 +90,25 @@ Lee SOLO la fila que aplica (progressive disclosure). `references/NN` = guía;
 | @tool / EditorPlugin / procedural | [`24`](references/24-tool-editor-plugin.md) | [`examples/24`](assets/examples/24-tool-editor-plugin/) | [`r26`](references/research/26-tool-editor-plugin.md) |
 | VFX / partículas | [`25`](references/25-vfx-particles.md) | [`examples/25`](assets/examples/25-vfx-particles/) | [`r27`](references/research/27-vfx-particles.md) |
 | Nativo C++ (GDExtension) | [`26`](references/26-gdextension.md) | [`examples/26`](assets/examples/26-gdextension/) | [`r28`](references/research/28-gdextension.md) |
+| **MCP: editor vivo (Godot AI)** | [`27`](references/27-godot-ai-mcp.md) | — | — |
+| **Flujos premium (orquestar el MCP)** | [`28`](references/28-premium-flows.md) | — | — |
 
 Doctrina y escalera completas: [`references/00-escalera-y-principios.md`](references/00-escalera-y-principios.md).
 Filosofía aplicada (construir vs reusar, anti-stuck): [`references/99-filosofia-aplicada.md`](references/99-filosofia-aplicada.md).
 Respaldo full-text (todo en un archivo, para búsqueda): [`skillgodot4.6.md`](skillgodot4.6.md).
+
+## MCP: Claude controla el editor en vivo (Godot AI)
+
+Si hay un editor Godot abierto con el addon **Godot AI** conectado (MCP), **prefiérelo**
+para tocar la escena: `node_create`/`node_set_property`/`scene_*` (no edites `.tscn` a
+mano — el MCP registra bien `uid://`), `script_create`/`script_patch`, `signal_manage`,
+`resource_manage`, y **verifica viendo** con `project_run` + `editor_screenshot` +
+`logs_read`. Son ~40 tools en 22 dominios. Conéctalo con `/godot-mcp` (o el botón
+Configure del dock). Detalle y mapa sistema→tool: [`references/27-godot-ai-mcp.md`](references/27-godot-ai-mcp.md).
+Para acciones de alto valor que encadenan varias tools (cablear un enemigo de combate,
+bindear el HUD, playtest con capturas, lazo auto-fix), usa los **flujos premium**:
+[`references/28-premium-flows.md`](references/28-premium-flows.md) (`/godot-flow <Fn>`).
+Sin editor vivo, degrada al lazo headless de `scripts/`.
 
 ## Workflow: "Quiero un RPG" en 5 pasos
 

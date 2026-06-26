@@ -10,6 +10,7 @@ NAME="${1:?Uso: new_project.sh <nombre> <desktop|mobile|web> [dir]}"
 TARGET="${2:?target requerido: desktop | mobile | web}"
 DEST="${3:-$NAME}"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_ROOT="$(cd "$SKILL_DIR/../.." && pwd)"   # raíz del plugin: hooks/ + settings.json
 GODOT="${GODOT_BIN:-godot}"
 
 case "$TARGET" in
@@ -36,6 +37,33 @@ sed -e "s/__PROJECT_NAME__/${NAME//\//_}/g" \
 
 cp "$SKILL_DIR/assets/gitignore.tmpl"     "$DEST/.gitignore"
 cp "$SKILL_DIR/assets/gitattributes.tmpl" "$DEST/.gitattributes"
+
+# Simbiosis con Claude: el lazo automático viaja con el proyecto.
+mkdir -p "$DEST/.claude/hooks"
+cp "$PLUGIN_ROOT/hooks/validate_gd_post_edit.sh" "$PLUGIN_ROOT/hooks/session_start.sh" "$PLUGIN_ROOT/hooks/errors.json" "$DEST/.claude/hooks/" 2>/dev/null || true
+chmod +x "$DEST/.claude/hooks/"*.sh 2>/dev/null || true
+cat > "$DEST/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Write|Edit|MultiEdit",
+        "hooks": [ { "type": "command", "command": "bash .claude/hooks/validate_gd_post_edit.sh", "timeout": 30 } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "bash .claude/hooks/session_start.sh" } ] }
+    ]
+  }
+}
+JSON
+cat > "$DEST/CLAUDE.md" <<MD
+# $NAME — proyecto Godot 4.6 (RPG, ponytail)
+
+- **Skill**: usa \`godot-46-rpg\`. Entra por su \`SKILL.md\` y el dispatcher tema→archivo.
+- **Filosofía ponytail**: reusa nodos/Resources nativos antes que escribir arquitectura propia; *lazy, no negligente* (nunca recortes validación/errores/seguridad/accesibilidad).
+- **Target**: $TARGET (renderer $RM).$([ "$TARGET" = web ] && echo " Web ⇒ GDScript, sin C#.")
+- **Cierra el lazo tras CADA edición**: \`bash verify_loop.sh\` (un hook PostToolUse ya valida los \`.gd\` al guardarlos y te devuelve el error).
+- **Editor vivo**: si conectas el MCP Godot AI, prefiere sus tools (\`node_*\`/\`scene_*\`/\`signal_manage\`) y verifica con \`project_run\`/\`editor_screenshot\`/\`logs_read\`.
+MD
 
 # Tres autoloads de servicios reales (no un GameManager-dios).
 cat > "$DEST/autoload/settings.gd" <<'GD'

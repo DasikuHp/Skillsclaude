@@ -1,0 +1,8 @@
+{
+  "name": "godot-46-rpg",
+  "version": "1.0.0",
+  "description": "Crea RPGs 3D en Godot 4.6 con filosofía ponytail: skill con dispatcher + 26 sistemas, lazo de verificación headless, hooks que validan cada .gd al editarlo, comandos, subagentes y flujos premium que orquestan el MCP Godot AI (editor vivo).",
+  "author": { "name": "Skillsclaude" },
+  "license": "MIT",
+  "keywords": ["godot", "godot-4.6", "rpg", "gamedev", "gdscript", "csharp", "mcp", "ponytail"]
+}

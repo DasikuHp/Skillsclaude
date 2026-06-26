@@ -1,0 +1,9 @@
+{
+  "_comment": "EJEMPLO del shape http del MCP Godot AI. La fuente de verdad es el botón Configure del dock del addon (Godot AI), que ejecuta 'claude mcp add --scope user --transport http godot-ai <url>' con la URL/puerto DINÁMICO de la sesión del editor. No fijes el puerto a mano. Ver skills/godot-46-rpg/references/27-godot-ai-mcp.md.",
+  "mcpServers": {
+    "godot-ai": {
+      "type": "http",
+      "url": "http://127.0.0.1:PUERTO_DINAMICO"
+    }
+  }
+}

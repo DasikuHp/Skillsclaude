@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_comment": "Plantilla de hooks de la skill godot-46-rpg. Como plugin usa ${CLAUDE_PLUGIN_ROOT}; new_project.sh instala una variante con rutas .claude/hooks/ en cada proyecto generado. Desactiva el bloqueo con GODOT_HOOK_DISABLE=1.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/validate_gd_post_edit.sh\"", "timeout": 30 }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.sh\"" }
+        ]
+      }
+    ]
+  }
+}
