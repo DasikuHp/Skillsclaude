@@ -1,0 +1,40 @@
+# ===== Godot 4.6 .gitignore =====
+# Cache del editor / importados / tabla UID. REGENERABLE con: godot --headless --import
+.godot/
+
+# Builds y exports locales (no el .cfg de presets, ver abajo)
+/build/
+/export/
+*.exe
+*.pck
+*.zip
+*.apk
+*.aab
+
+# Traducciones binarias compiladas (solo si las regeneras en CI desde .po/.csv)
+# *.translation
+
+# C# / .NET 8 (solo si usas C#)
+.mono/
+mono_crash.*.json
+[Bb]in/
+[Oo]bj/
+*.csproj.user
+
+# Secretos de exportacion: las credenciales (keystore passwords, etc.) viven
+# en export_credentials.cfg desde Godot 4.1. export_presets.cfg SI se versiona.
+export_credentials.cfg
+*.keystore
+*.jks
+
+# OS / editores externos
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== ANTI-PATRON: NO ignorar estos (rompen el repo en cada clon) =====
+# *.import   <- parametros de importacion: COMMITEAR
+# *.uid      <- identidad estable de recursos desde 4.4: COMMITEAR (si los ignoras,
+#               cada clon regenera UIDs y se rompen TODOS los enlaces uid:// escena<->script)
+# export_presets.cfg <- presets reproducibles para CI: COMMITEAR (sin credenciales)

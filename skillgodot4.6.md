@@ -1,3 +1,4 @@
+<!-- NOTA: copia de respaldo / búsqueda full-text. La versión MANTENIDA y canónica de esta skill es SKILL.md + references/. -->
 ---
 name: godot-4.6-rpg
 description: >

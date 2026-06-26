@@ -1,0 +1,24 @@
+; Godot 4.6 — project.godot generado por scripts/new_project.sh
+; Placeholders sustituidos por el scaffolder: __PROJECT_NAME__, __RENDERING_METHOD__, __FEATURES__
+config_version=5
+
+[application]
+config/name="__PROJECT_NAME__"
+config/features=PackedStringArray("4.6", "__FEATURES__")
+run/main_scene="res://scenes/main.tscn"
+
+[rendering]
+renderer/rendering_method="__RENDERING_METHOD__"
+
+[physics]
+; Jolt es el motor 3D por defecto en proyectos nuevos 4.6; explícito para proyectos migrados.
+3d/physics_engine="Jolt"
+
+[autoload]
+; Tres servicios reales (ponytail: no un GameManager-dios). El prefijo * = autoload activo.
+Settings="*res://autoload/settings.gd"
+SaveSystem="*res://autoload/save_system.gd"
+EventBus="*res://autoload/event_bus.gd"
+
+[input]
+; Acciones mínimas de locomoción 3ª persona (añade las tuyas en Project Settings → Input Map).
