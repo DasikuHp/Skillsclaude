@@ -12,8 +12,13 @@ func splat(hit_pos: Vector3, surface_normal: Vector3) -> void:
 	global_position = hit_pos + surface_normal * 0.05
 	# El Decal proyecta por su eje -Y LOCAL: hay que orientar -Y hacia la superficie.
 	# look_at apunta -Z al objetivo, asi que rotamos -90 en X local para pasar -Z -> -Y.
+	# OJO (ATASCO #9): si la normal es paralela al up, look_at dispara
+	# 'Up vector and direction are aligned'. Pasa tanto en suelo (normal +Y)
+	# como en TECHO (normal -Y): la direccion -surface_normal queda paralela a +Y.
+	# Por eso elegimos un up alternativo cuando la normal casi se alinea con +Y.
 	if not surface_normal.is_equal_approx(Vector3.UP):
-		look_at_from_position(global_position, global_position - surface_normal, Vector3.UP)
+		var up := Vector3.UP if absf(surface_normal.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+		look_at_from_position(global_position, global_position - surface_normal, up)
 		rotate_object_local(Vector3.RIGHT, -PI / 2.0)
 	albedo_mix = 1.0  # en 0 el decal es invisible aunque la textura cargue
 	modulate = Color(1.0, 1.0, 1.0, randf_range(0.7, 1.0))

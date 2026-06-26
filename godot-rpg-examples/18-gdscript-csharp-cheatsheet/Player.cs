@@ -4,7 +4,7 @@
 //
 // public class Player : KinematicBody          // clase 3.x, sin partial -> GD0001
 // {
-//     [Signal] public delegate void Died();    // sin sufijo EventHandler -> GD0202
+//     [Signal] public delegate void Died();    // sin sufijo EventHandler -> GD0201
 //     public override void _Ready() {
 //         Console.WriteLine("hi");              // no aparece en Output del editor
 //         EmitSignal("Died");                   // string magico

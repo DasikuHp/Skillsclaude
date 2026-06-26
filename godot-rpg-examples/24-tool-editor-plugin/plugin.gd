@@ -3,6 +3,12 @@ extends EditorPlugin
 ## Mini EditorPlugin (addons/dungeon/plugin.gd). Compile-ready en 4.6.
 ## Registra un tipo custom + un dock, y limpia TODO simétricamente en _exit_tree.
 ## Sin @tool en la primera línea, el plugin NO carga y no hay error obvio.
+##
+## OJO: los preload() de abajo se resuelven en PARSE time, no en runtime. Si esos
+## archivos (dungeon_room.gd, icon.svg, dock.tscn) no existen en res://addons/dungeon/,
+## el propio `godot --headless --check-only --script .../plugin.gd` falla a parsear con
+## "Could not preload resource file". Por eso este addon ship-ea los tres stubs junto a
+## plugin.gd; colócalos bajo res://addons/dungeon/ antes de validar por CLI.
 
 const TYPE_NAME := "DungeonRoom"
 

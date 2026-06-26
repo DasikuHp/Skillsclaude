@@ -26,7 +26,9 @@ public partial class HudCsharp : Control
         GetNode<Label>("Title").Text = Tr("START_GAME");
         GetNode<Label>("OpenBtn").Text = Tr("MENU_OPEN", context: "verb");
         // Plural: TrN(message, pluralMessage, n, context = null)
-        string txt = TrN("%d enemy", "%d enemies", _enemyCount);
+        // OJO C#: string.Format NO entiende printf (%d); usa composite format ({0}).
+        // El msgid en es.po DEBE coincidir exacto, asi que las fuentes usan {0}, no %d.
+        string txt = TrN("{0} enemy", "{0} enemies", _enemyCount);
         GetNode<Label>("EnemiesKilled").Text = string.Format(txt, _enemyCount);
         GetNode<Label>("PlayerName").Text = _playerName;
     }

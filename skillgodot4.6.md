@@ -3097,7 +3097,7 @@ chmod +x ./addons/gdUnit4/runtest.sh
 
 ### Pitfalls y mensajes de error literales
 
-**P1 — El exit code de `--check-only` MIENTE (el peor para una IA).** Históricamente devolvió siempre **0** con error de parseo (GH-33895), luego siempre **1** con script válido (GH-54087), y da falsos positivos por no descubrir autoloads (GH-78587). El bug genérico de no propagar exit no-cero está en GH-85062.
+**P1 — El exit code de `--check-only` MIENTE (el peor para una IA).** Históricamente devolvió siempre **0** con error de parseo (GH-33895), luego siempre **1** con script válido (GH-54087), y daba falsos positivos por chequear el script antes de registrar los autoloads (GH-78587), corregido por PR #110295. El bug genérico de no propagar exit no-cero está en GH-85062. Aun así no confíes en `$?` de `--check-only`.
 → **Fix:** no uses `$?` con `--check-only`. **Grepea `SCRIPT ERROR` / `Parse Error` en stdout/stderr**, o usa el tool script propio con `quit(N)`. El error literal sí es fiable y trae archivo:línea:
 ```
 SCRIPT ERROR: Parse Error: Identifier "helth" not declared in the current scope.
@@ -3172,15 +3172,15 @@ No necesitas ningún addon para generar `.tscn`/`.tres`/`project.godot`: son tex
 **Lo que cambió en 4.6 (verificado en la guía oficial de upgrade):**
 
 1. **`load_steps` se eliminó del header.** En 4.6 el engine ya **no escribe** `load_steps` al guardar (seguía siendo solo para la barra de progreso, y ensuciaba diffs/rebases en VCS). Sigue parseándolo si está presente por compatibilidad, pero lo borra al re-guardar. **Una IA generando escenas 4.6 NO debe escribir `load_steps`.** Es el primer red flag que delata texto generado con docs viejos.
-2. **Los nodos ahora guardan un UID propio en la escena** para rastrearlos al mover/renombrar (refactor más robusto). Es retro/forward-compatible (escenas 4.5 cargan en 4.6 y viceversa). No lo escribas a mano; aparece solo al re-guardar en el editor.
-3. **`load_steps` + UIDs de nodo = diff masivo** la primera vez que abres+guardas un proyecto 4.5 en 4.6. Hazlo en un commit aislado tras `Project > Tools > Upgrade Project Files...`.
+2. **Cada nodo guarda un identificador entero estable** (atributo `unique_id=NNNN` en el `[node]`, p.ej. `[node name="Ball" ... unique_id=1358867382]`), distinto de los `uid://` de escena/recurso, para sobrevivir a renombrados/movimientos en herencia de escenas (refactor más robusto). Es retro/forward-compatible (escenas 4.5 cargan en 4.6 y viceversa). No lo escribas a mano ni emitas un `uid://` en un nodo; el editor lo añade solo al re-guardar.
+3. **`load_steps` + `unique_id` de nodo = diff masivo** la primera vez que abres+guardas un proyecto 4.5 en 4.6. Hazlo en un commit aislado tras `Project > Tools > Upgrade Project Files...`.
 
 **Header canónico 4.6 (sin `load_steps`):**
 
-```gdscript
+```ini
 [gd_scene format=3 uid="uid://cecaux1sm7mo0"]
 ```
-```gdscript
+```ini
 [gd_resource type="Resource" script_class="ItemData" format=3 uid="uid://b3qf7x2k9m1n0"]
 ```
 
@@ -3219,7 +3219,7 @@ if ResourceUID.has_id(id):
 - **`[input]` editado a mano:** los `InputEvent` se serializan como `Object(InputEventKey, "physical_keycode":4194309, ...)` con decenas de campos y keycodes físicos vs lógicos. Extremadamente frágil. **No lo edites a mano**; usa el editor o `InputMap.add_action()` por código en un autoload.
 - **`Invalid type in property` al cargar (4.6 específico):** las props de *nombre de animación* de `AnimationPlayer` (`current_animation`, `assigned_animation`, `autoplay`) pasaron de `String` a `StringName` (GH-110767). En `.tscn` usa `current_animation = &"walk"`. NO afecta a nombres de track.
 - **`ResourceSaver.save` falla con `ERR_CANT_OPEN`:** la carpeta `res://` destino no existe (Godot NO crea dirs). Llama `DirAccess.make_dir_recursive_absolute()` primero. SIEMPRE comprueba `err == OK`.
-- **`ResourceUID.get_id_path()` devuelve inválido/-1 en proyecto EXPORTADO** (godot#75617). No dependas de resolver UID→path en runtime empaquetado; carga por `uid://` directo con `load()`, que sí funciona empaquetado.
+- **`ResourceUID.get_id_path()` devuelve inválido/-1 en proyecto EXPORTADO** (godot#75617). No dependas de resolver UID→path en runtime empaquetado. `load("uid://...")` suele funcionar empaquetado porque `uid_cache.bin` se incluye en el PCK, pero hay casos de fallo en export/PCK montados (godot#79009, godot#82061: el `uid_cache.bin` de PCKs montados no se fusiona); si exportas y el UID no resuelve, ten un fallback a `res://` o reconstruye la cache. Lo que NO es fiable en export es resolver UID→path con `get_id_path()`.
 - **C# NO corre en export web** (renderer Compatibility). Si el target incluye web, escribe el save/load en GDScript.
 - **Duplicate UID** (copy-paste de archivos fuera del editor): dos recursos con el mismo `uid://`. No hay autofix; borra el `.uid` de uno y re-guarda, o `ResourceUID.create_id()`.
 
@@ -3285,7 +3285,7 @@ GDScript 2.0, tipado estático, señales como objetos, `await`, `@abstract`, sou
 | NodePath literal | `"../Player"` | `^"../Player"` |
 | Static var/func | (no existía) | `static var counter: int = 0` / `static func f()` |
 | Lambda | (no existía) | `var f := func(x): return x*2` → `f.call(2)` |
-| super | `.method()` | `super.method()` / `super()` en `_ready`/`_init` |
+| super | `.method()` | `super.method()` para cualquier método (p.ej. `super._ready()`); `super()` SOLO chaina el constructor `_init` |
 | Instanciar escena | `scene.instance()` | `scene.instantiate()` |
 | Abstracta | (no existía / hack `push_error`) | `@abstract class_name Base` / `@abstract func f()` (desde 4.5) |
 | RNG en rango | `randi() % n` | `randi_range(0, n-1)` (preferido) |
@@ -3376,7 +3376,8 @@ public partial class Player : CharacterBody3D   // partial OBLIGATORIO
 | `Cannot convert argument from String to StringName` (AnimationPlayer, 4.6) | `current_animation`/`assigned_animation`/`autoplay` pasaron de **String→StringName** (GH-110767); `get_queue()` → `StringName[]` | GDScript: usar `&"idle"`. **NO afecta nombres de track.** |
 | C#: `GD0001: Missing partial modifier on declaration of type 'X'` | falta `partial` | añadir `partial` |
 | C#: `... does not contain a definition for 'SignalName'` | falta `partial` (no se generó) | añadir `partial` |
-| C#: `GD0202: signal delegate must end with 'EventHandler'` | delegate de señal mal nombrado | `delegate void XEventHandler(...)` |
+| C#: `GD0201: The name of the delegate must end with 'EventHandler'` | delegate de señal sin el sufijo requerido | `delegate void XEventHandler(...)` |
+| C#: `GD0202: The parameter of the delegate signature of the signal is not supported` | tipo de parámetro de la señal no marshalable | usar un tipo soportado (primitivos, `Variant`, tipos del engine) |
 | C#: `Can't emit non-existing signal "X"` (runtime) | falta sufijo `EventHandler` | renombrar el delegate (GH-82268) |
 | C#: `CS0246: type or namespace '...' could not be found` | frecuentemente **cache de build corrupta**, no tu código | `dotnet clean`, borrar `.godot/mono/` y `.mono/`, reconstruir (GH-68411) |
 | C#: error al compilar tras actualizar a 4.6 con `CurrentAnimation = "run"` | StringName breaking (GH-110767): C# NO es source-compatible | `anim.CurrentAnimation = (StringName)"run";` |
@@ -3576,7 +3577,7 @@ Input.is_action_just_pressed(action, exact_match := false) -> bool
 Input.get_action_strength(action, exact_match := false) -> float           # 0..1 analógico
 Input.action_release(action) -> void                                       # libera una acción "pegada"
 
-InputMap.add_action(action: StringName, deadzone := 0.5) -> void           # OJO: default 0.5, no 0.2
+InputMap.add_action(action: StringName, deadzone := 0.2) -> void           # default 0.2 desde 4.4 (era 0.5 hasta 4.3); el 0.5 solo aplica al toggle-deadzone de las acciones ui_*
 InputMap.action_add_event(action, event: InputEvent) -> void
 InputMap.action_erase_events(action) -> void                               # borra TODOS (plural)
 InputMap.action_erase_event(action, event) -> void                         # borra UNO (singular)
@@ -3634,7 +3635,7 @@ Input.joy_connection_changed.connect(func(device: int, connected: bool) -> void:
 
 - **`is_action_just_pressed` en `_physics_process` descarta inputs (GH-73339).** `just_pressed` compara con el estado del tick anterior; si la acción se pulsa-y-suelta entre dos ticks, el frame se pierde. Síntoma: "el ataque a veces no sale", "el salto se come inputs a bajo FPS". Fix: one-shots en `_unhandled_input` con `event.is_action_pressed`, no en polling. Y mantén cada one-shot en UN solo sitio (no en `_process` y `_physics_process` a la vez → doble salto).
 
-- **`get_vector` no usa la deadzone que crees.** Con el 5º arg en `-1.0` (default) usa el **promedio** de las deadzones de las 4 acciones. Pásala explícita (`0.2`–`0.3`). Mezclar teclado (1.0 binario) y stick analógico en las mismas acciones puede dar saltos cerca de la deadzone (GH-90515, GH-85124). Acción nueva en runtime: recuerda que `add_action` default es **0.5**, no 0.2.
+- **`get_vector` no usa la deadzone que crees.** Con el 5º arg en `-1.0` (default) usa el **promedio** de las deadzones de las 4 acciones. Pásala explícita (`0.2`–`0.3`). Mezclar teclado (1.0 binario) y stick analógico en las mismas acciones puede dar saltos cerca de la deadzone (GH-90515, GH-85124). Acción nueva en runtime: el default de `add_action` es **0.2** (desde 4.4; era 0.5 hasta 4.3). Pásalo explícito igualmente para no depender de versiones.
 
 - **`_gui_input` no recibe nada, sin error en consola.** Es `Control.mouse_filter`. Un `Control` base por defecto es `MOUSE_FILTER_IGNORE`; un overlay/`ColorRect` a pantalla completa con `MOUSE_FILTER_STOP` se come todos los clicks y tu `_unhandled_input` nunca los ve. Pon overlays decorativos en `IGNORE` y setea `mouse_filter` explícito en el nodo que debe recibir.
 
@@ -3712,6 +3713,8 @@ godot --headless --path . --quit-after 2 2>&1 | grep -Ei "ERROR|invalid UID|Unab
 ```
 
 `--import`, `--check-only`, `--headless`, `--script`/`-s`, `--export-release`, `--export-debug`, `--verbose`, `--quit-after N` son flags **reales** de la CLI 4.6.
+
+**Trampa de `--check-only` con autoloads (falso positivo que atasca a la IA):** `--check-only` NO conoce los singletons del bloque `[autoload]`. Validar un script que referencia otro autoload (p.ej. `game_state.gd` usa `EventBus.item_picked.connect(...)`) escupe un falso error `Identifier "EventBus" not declared in the current scope` aunque el código sea correcto (GH-78587). Una IA que valida a ciegas creerá que el script está roto. Regla: usa `--check-only` como señal fiable SOLO en scripts sin dependencias de autoload (como `event_bus.gd`). Para los que referencian otros autoloads, valida con un arranque headless completo (`--headless --quit-after 2`) o ignora específicamente los errores `Identifier ... not declared` que apunten a nombres de autoload.
 
 ### Checklist accionable (orden estricto — el orden importa más que cualquier addon)
 
@@ -3831,7 +3834,7 @@ Tabla completa con URLs en `examples`. Selección rápida:
 - **Diálogos:** Dialogic 2 (`dialogic-godot/dialogic`). Alternativa más ligera: `nathanhoad/godot_dialogue_manager`. Elige uno.
 - **Cámara:** Phantom Camera (`ramokz/phantom-camera`) — estilo Cinemachine.
 - **IA (BT/FSM):** **LimboAI** (`limbonaut/limboai`, **C++ GDExtension/módulo — necesita binario por plataforma**, soporte 4.6 desde v1.6.0) **vs Beehave** (`bitbrain/beehave`, branch `godot-4.x`, **GDScript puro, sin binario** → mejor para CI/agentes y para web). **No los uses a la vez** (ver pitfall).
-- **Inventario:** GLoot (`peter-kish/gloot`, 4.2+). (El autor es `peter-kish`, NO "peter1745"; Beehave es de `bitbrain`.)
+- **Inventario:** GLoot (`peter-kish/gloot`, 4.4+ en releases actuales; la entrada AssetLib aún lista 4.2). (El autor es `peter-kish`, NO "peter1745"; Beehave es de `bitbrain`.)
 - **Testing:** GUT (`bitwes/Gut`) si es GDScript puro y quieres mínima fricción; **gdUnit4** si tienes C#/mixto o quieres runner de CI + JUnit XML + GitHub Action oficial.
 
 ### Pitfalls y mensajes de error literales
@@ -3884,7 +3887,10 @@ uniform sampler2D depth_tex  : hint_depth_texture;
 Comandos que una IA SÍ puede correr sin ver el editor:
 
 ```bash
-# Validar sintaxis GDScript 2.0 de un script concreto
+# Validar sintaxis GDScript 2.0 de un script SIN dependencias de autoload.
+# OJO: --check-only no resuelve singletons [autoload] → un script que use
+# otro autoload (EventBus, GameState...) dará un FALSO "Identifier ... not
+# declared" (GH-78587). Para esos, valida con --quit-after 2, no --check-only.
 godot --headless --check-only --script res://autoload/event_bus.gd --path .
 
 # Confirmar que .uid/.import están trackeados (deben devolver resultados)
@@ -3975,7 +3981,7 @@ Reglas que rompen a la gente:
 - Comas/saltos dentro de celda → entrecomillar con `"`; comilla interna se escapa duplicándola (`""`).
 - Delimitador puede ser coma, `;` o tab (`ResourceImporterCSVTranslation`). Excel-ES suele guardar `;` + BOM: revisa ambos.
 - **No dejes celdas vacías**: el comportamiento de "vacío" difiere entre CSV y PO (en PO `msgstr ""` devuelve la clave). Repite el texto fuente explícitamente.
-- `?context` y `?plural` son columnas especiales de 4.6 (PR #101471); solo se respeta la **primera** de cada una. Ver veredicto de plurales abajo.
+- `?context` ya existía; `?plural` se añadió en PR #101471 (línea 4.x previa a 4.6, no es nuevo de 4.6). Solo se respeta la **primera** columna de cada tipo. Ver veredicto de plurales abajo.
 
 #### gettext (PO/POT)
 
@@ -4011,7 +4017,7 @@ Persiste el locale en `user://settings.cfg` y aplícalo en un autoload `_ready()
 
 ### Pitfalls y mensajes de error literales
 
-- **`tr("START_GAME")` muestra `START_GAME` literal (sin error en consola).** Causas, por probabilidad: (a) el `.translation` no está en `locale/translations`; (b) el `.csv`/`.po` no se reimportó (`godot --headless --import`); (c) **Localization > Locale > Test** vacío y sin `set_locale()` (GH-80985); (d) locale no coincide (registraste `es_ES` pero pides `es` — el fallback `xx_YY`→`xx` puede fallar, GH-90677; usa locales sin región salvo necesidad); (e) la clave contiene `\n` (GH-47883 — usa claves planas).
+- **`tr("START_GAME")` muestra `START_GAME` literal (sin error en consola).** Causas, por probabilidad: (a) el `.translation` no está en `locale/translations`; (b) el `.csv`/`.po` no se reimportó (`godot --headless --import`); (c) **Localization > Locale > Test** vacío y sin `set_locale()` (GH-80985); (d) locale no coincide (registraste `es_ES` pero pides `es`). El fallback `xx_YY`→`xx` fue arreglado en 4.4+ (PR #98743) y ya funciona en 4.6, pero sigue siendo buena práctica defensiva usar locales sin región salvo necesidad (GH-90677, ya cerrado); (e) la clave contiene `\n` (GH-47883 era `[3.x]`, legacy — aun así usa claves planas por higiene).
 - **Texto sale como `□□□` (tofu) o invisible en CJK/árabe.** NO es i18n: la fuente no tiene esos glyphs. Fix en §fuentes.
 - **`Error parsing CSV` / primera clave corrupta / mojibake.** CSV no es UTF-8 o tiene BOM. Re-guardar UTF-8 sin BOM.
 - **`tr_n` da forma plural incorrecta o falla.** `nplurals` del header ≠ número de `msgstr[]`. Valida con `msgfmt -c`.
@@ -4028,7 +4034,7 @@ El texto japonés/coreano/árabe sale como `□□□` porque la fuente primaria
 - En **desktop/móvil** Godot usa fuentes del SO como fallback automático (`SystemFont`) → CJK/emoji suelen resolverse solos. En **export web NO se cargan system fonts** → debes empaquetar la fuente.
 - Añade **fallbacks Noto** al `FontFile`/`Theme`/`LabelSettings`: `Noto Sans JP`, `Noto Sans SC`, `Noto Sans KR`, `Noto Sans Arabic`. Una sola fuente con cadena de fallbacks que cubra todos los idiomas.
 - **NO remapees fuentes por locale**: cambiar de idioma en runtime rompe la fuente remapeada (GH-80130). Usa fuente única + fallbacks.
-- **MSDF + CJK = problemas**: atlas gigante y bug de "cajas grises" en `Label3D` (GH-100726). Para diálogos 3D usa DynamicFont (TTF/OTF) que rasteriza on-demand.
+- **MSDF + CJK = problemas**: atlas gigante; el bug de "cajas grises" en `Label3D` (GH-100726) fue una regresión de 4.4-dev arreglada en PR #100678, pero el punto de fondo sigue en pie: un atlas MSDF con CJK es pesadísimo. Para diálogos 3D usa DynamicFont (TTF/OTF) que rasteriza on-demand.
 - Árabe/devanagari requiere **TextServer Advanced** (build por defecto lo trae; builds minimal/web pueden no traerlo → shaping roto, letras inconexas).
 
 ### Cómo no quedarte atascado (headless / sin editor)
@@ -4067,7 +4073,7 @@ locale/translations_pot_files=PackedStringArray("res://main.gd", "res://ui/menu.
 - **Evita** soluciones que reimplementan su `TranslationServer` o cargan JSON propio en runtime: pierdes auto-translate de nodos y el scanner de catálogo.
 - Ningún addon resuelve el gap de POT-por-CLI; es del engine (GH-10986).
 
-**Veredicto ponytail:** no escribas tu propio sistema de traducción. Usa claves + `tr()`/`tr_n()` + `TranslationServer` y deja que el auto-translate de los nodos `Control` haga el trabajo gratis; tú solo re-aplicas en `NOTIFICATION_TRANSLATION_CHANGED` los textos que seteaste por código. Para un RPG serio elige **PO/gettext** (plurales reales, contexto, Git, Weblate); el CSV es la opción rápida pero sus columnas `?context`/`?plural` de 4.6 son nuevas y poco probadas, así que para plurales robustos sigue siendo más seguro PO. El 90% de tu esfuerzo anti-stuck no está en la API sino en tres cosas: reimportar (`--import`), registrar en `project.godot`, y empaquetar fuentes con fallbacks Noto. Lo que NO existe (formateo de números/fechas por locale, POT por CLI) no lo busques: hazlo con gettext externo o a mano.
+**Veredicto ponytail:** no escribas tu propio sistema de traducción. Usa claves + `tr()`/`tr_n()` + `TranslationServer` y deja que el auto-translate de los nodos `Control` haga el trabajo gratis; tú solo re-aplicas en `NOTIFICATION_TRANSLATION_CHANGED` los textos que seteaste por código. Para un RPG serio elige **PO/gettext** (plurales reales, contexto, Git, Weblate); el CSV es la opción rápida pero su columna `?plural` (añadida en PR #101471, línea 4.x previa a 4.6) está menos probada que el flujo gettext, así que para plurales robustos sigue siendo más seguro PO. El 90% de tu esfuerzo anti-stuck no está en la API sino en tres cosas: reimportar (`--import`), registrar en `project.godot`, y empaquetar fuentes con fallbacks Noto. Lo que NO existe (formateo de números/fechas por locale, POT por CLI) no lo busques: hazlo con gettext externo o a mano.
 
 ## 23. Multiplayer y co-op
 
@@ -4156,7 +4162,7 @@ func _process(_delta: float) -> void:
 - **`RPC '...' is not allowed on node ... Mode is 'Authority', authority is '<id>'.`** / `Unable to get RPC config for the function "..."` (GH-66224): el método no tiene `@rpc`/`[Rpc]`, la anotación difiere entre peers, o un no-authority llamó una RPC `"authority"`. La config `@rpc` debe ser **idéntica** en el script que ambos peers cargan.
 - **RPC silencioso dentro de señales del *peer*** (GH-68750): no puedes lanzar RPC dentro del handler `peer_connected` del `MultiplayerPeer`. Conéctate a `multiplayer.peer_connected` (señal de la **API**), no a `peer.peer_connected`. Síntoma: id válido en log, RPC descartado sin error.
 - **`Node not found` / `Failed to get cached path` / `get_cached_object: ID not found in cache of peer.`** (GH-76894, GH-78692): nombres no deterministas (fix: `name = str(peer_id)`), o el `spawn_path`/`MultiplayerSpawner` no existe con path idéntico en el cliente (fix: carga la **misma** escena raíz en host y cliente; espera a que ambos tengan el árbol antes de RPC al nodo recién spawneado).
-- **`The MultiplayerSynchronizer ... is unable to process the pending spawn since it has no network ID.`** (GH-75067): cambiaste autoridad en `_ready()`. Fix: hazlo en `_enter_tree()` o en `spawn_function`.
+- **`The MultiplayerSynchronizer ... is unable to process the pending spawn since it has no network ID.`** (GH-75067): asignar autoridad en `_ready()` —y, según el timing del spawn, incluso en `_enter_tree()` (es justo el patrón que reporta GH-75067)— puede disparar el error "no network ID". El fix robusto es **derivar la autoridad del nombre determinista del nodo** que `spawn_function` fija (`p.name = str(data)`): `set_multiplayer_authority(name.to_int())` en `_enter_tree()` como sitio primario, y `spawn_function` como fallback garantizado (corre en cada peer con el nombre ya puesto).
 - **`Trying to call an RPC via a multiplayer peer which is not connected.`**: RPC antes de `connected_to_server`. Fix: espera la señal, o comprueba `multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED`.
 - **RPC "no hace nada" en el emisor** (GH-98588): falta `"call_local"`.
 - **`@rpc` en método de no-Node** (GH-89981): solo funciona en métodos de clases derivadas de `Node`.
@@ -4184,7 +4190,7 @@ Sin editor, el flujo de validación es por CLI (todos los flags verificados en l
 - Dos instancias para probar: parsea args tras `--` (`if "--server" in OS.get_cmdline_user_args()`).
 - **Dedicated server:** el export "dedicated server" fuerza `--headless` y setea el feature tag `dedicated_server` -> `if OS.has_feature("dedicated_server"):` arranca como server. Export: `godot --headless --export-release "Linux Server" build/server.x86_64`.
 - **Debug ciego obligatorio:** loguea `multiplayer.get_unique_id()`, `get_multiplayer_authority()`, `is_multiplayer_authority()` en `_ready` de cada peer, y `get_remote_sender_id()` dentro de cada RPC `any_peer` — es tu única ventana sin GUI.
-- **Web/navegador:** ENet (UDP) **no** funciona; usa `WebSocketMultiplayerPeer` o `WebRTCMultiplayerPeer` (ambos nativos). **C# no corre en web** (renderer Compatibility, sin .NET) — si el target es navegador, usa GDScript y detéctalo antes de escribir nada.
+- **Web/navegador:** ENet (UDP) **no** funciona. `WebSocketMultiplayerPeer` está **built-in en todas las plataformas** (cero dependencias) — es el default recomendado para el target web de una IA ciega. `WebRTCMultiplayerPeer` solo es built-in en el export Web/HTML5; en escritorio requiere el **GDExtension de WebRTC** y además un **servidor de signaling** externo, así que no funciona out-of-the-box en un build de prueba de escritorio. **C# no corre en web** (renderer Compatibility, sin .NET) — si el target es navegador, usa GDScript y detéctalo antes de escribir nada.
 
 **Qué NO sincronizar (lista negra):** nodos cosméticos (partículas, audio one-shot, animación de UI -> dispáralos por RPC `unreliable`); valores derivables (calcula `health_bar` desde `hp` local); RNG/loot (el **server** tira el dado y replica el resultado, o sincroniza la semilla — `randi()` por cliente = mundos divergentes); inventario completo cada tick (RPC `reliable` solo al dueño al cambiar); `velocity` + `position` a la vez si el cliente corre física (fight de integración). Posición = `unreliable_ordered`; eventos = `reliable`. Para mapas grandes: `public_visibility = false` + `set_visibility_for(peer_id, true)` (interest management; ahorra banda y previene wallhacks — pero solo lo respeta el peer **con autoridad** sobre el synchronizer, por eso enemigos deben ser autoritarios del server).
 
@@ -4262,6 +4268,9 @@ Una IA no ve el editor, pero **valida headless por CLI** (esto convierte fallos 
 
 ```bash
 # 1. ¿Compila el script @tool / plugin? (parsea, no ejecuta). -s == --script
+# OJO: --check-only parsea, y preload() se resuelve en PARSE time. Si plugin.gd
+# hace preload de scripts/icono/dock que aún no existen, esto falla con
+# "Could not preload resource file" ANTES de validar nada. Crea esos stubs primero.
 godot --headless --check-only --script res://addons/dungeon/plugin.gd
 
 # 2. Re-importar recursos/.uid sin GUI (resuelve "Cannot open file ... uid://...")
@@ -4321,7 +4330,7 @@ Mapa de nodos nativos 4.6 (verificados contra `docs.godotengine.org`):
 | Colisión con el mundo | `GPUParticlesCollision3D` (Box3D/Sphere3D/SDF3D/HeightField3D) | **solo GPU**, NO ve PhysicsBody3D/Jolt |
 | Fallback Web/Compatibility | `CPUParticles3D` | sin colisión/attractors/sub-emitters/compute |
 
-Propiedades canónicas de `GPUParticles3D`: `emitting`, `amount` (≥1), `one_shot`, `explosiveness` (0–1), `lifetime`, `speed_scale`, `fixed_fps`, `process_material`, `draw_pass_1`..`draw_pass_4`, `sub_emitter` (NodePath), `trail_enabled`, `trail_lifetime`, `visibility_aabb` (AABB). Señal: `finished` — **se emite SOLO con `one_shot == true`**, nunca en loop. Métodos: `restart()`, `emit_particle(...)`, `capture_aabb()`.
+Propiedades canónicas de `GPUParticles3D`: `emitting`, `amount` (≥1), `one_shot`, `explosiveness` (0–1), `lifetime`, `speed_scale`, `fixed_fps`, `process_material`, `draw_pass_1`..`draw_pass_4`, `sub_emitter` (NodePath), `trail_enabled`, `trail_lifetime`, `visibility_aabb` (AABB). Señal: `finished` — **se emite SOLO con `one_shot == true`**, nunca en loop. Métodos: `restart()`, `emit_particle(...)`, `capture_aabb()` — ojo: `capture_aabb()` **devuelve** el AABB de las partículas vivas del frame actual (es un cálculo, NO asigna nada); para que sirva como "Generate AABB" tienes que asignar tú su resultado a `visibility_aabb` (o `custom_aabb`) tras 1 frame.
 
 Nombres C# (.NET 8): la clase es `GpuParticles3D` (PascalCase, no `GPUParticles3D`), `Aabb`, `VisibilityAabb`, `OneShot`, `Emitting`, `Restart()`, evento `Finished`.
 
@@ -4329,7 +4338,7 @@ Nombres C# (.NET 8): la clase es `GpuParticles3D` (PascalCase, no `GPUParticles3
 
 **ATASCO #1 — partículas invisibles por `visibility_aabb` (el que más mata a una IA ciega).**
 Síntoma: código perfecto, `emitting = true`, sin error, y nada se ve; o parpadea/desaparece al mover la cámara. Causa: el `visibility_aabb` (heredado de `GeometryInstance3D`) es la caja que debe estar en pantalla para que el sistema se *procese*; por defecto es pequeño y **local al nodo**. Si las partículas vuelan fuera (velocidad alta, emisor en movimiento siguiendo un proyectil), el motor culling-ea TODO el emisor. El fix "canónico" es el botón **Particles → Generate AABB**, que una IA NO puede pulsar. Además (GH-93567) **el AABB delimita también la zona de colisión**: un AABB pequeño rompe colisión en silencio. Y `GeometryInstance3D.custom_aabb`, si tiene valor no-default, **sobrescribe** `visibility_aabb`.
-Fix por código: AABB amplio explícito + `extra_cull_margin`, o `capture_aabb()` tras un frame (equivalente al botón).
+Fix por código: AABB amplio explícito + `extra_cull_margin`, o asignar el resultado de `capture_aabb()` a `visibility_aabb` tras un frame (equivalente al botón; `capture_aabb()` solo lo calcula, no lo escribe).
 
 **ATASCO #2 — one-shot que no re-dispara (impactos que solo funcionan la primera vez).**
 Con `one_shot = true`, poner `emitting = true` **no reinicia** el ciclo si quedan partículas vivas en GPU (GH-79689, GH-83909, GH-93991). En combate rápido el segundo golpe no muestra nada. Fix: usar **`restart()`** siempre. Nunca `emitting = false; emitting = true`.
@@ -4375,7 +4384,7 @@ godot --export-release "Web" build/index.html                   # OJO: Web = Com
 ```
 
 Checklist de invariantes que una IA ciega DEBE codificar:
-1. AABB explícita por código (`visibility_aabb` amplio o `capture_aabb()` tras 1 frame) — nunca depender de "Generate AABB".
+1. AABB explícita por código (`visibility_aabb` amplio, o asignar el resultado de `capture_aabb()` a `visibility_aabb` tras 1 frame) — nunca depender de "Generate AABB".
 2. Re-disparo de one-shot SIEMPRE con `restart()`.
 3. Reciclaje del pool respaldado con `Timer` idempotente, no solo `finished`.
 4. Pool pre-calentado (un `restart()` al cargar) contra el lag spike.

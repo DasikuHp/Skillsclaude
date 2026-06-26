@@ -35,7 +35,7 @@ func _ready() -> void:
     died.connect(_on_died)                       # Callable, sin string ni self
     died.emit(100)                               # .emit, NO emit_signal
     await get_tree().create_timer(1.0).timeout   # await + propiedad-senal
-    super()                                       # super(), NO .ready()
+    super._ready()                                # super._ready(), NO .ready()
 
 func _on_died(score: int) -> void:
     print(score)

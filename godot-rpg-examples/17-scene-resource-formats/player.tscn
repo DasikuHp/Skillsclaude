@@ -20,4 +20,6 @@ shape = SubResource("CapsuleShape3D_k3m1")
 [node name="Sword" parent="." instance=ExtResource("3_xy987")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
 
+[node name="Hurtbox" type="Area3D" parent="."]
+
 [connection signal="body_entered" from="Hurtbox" to="." method="_on_hurtbox_body_entered"]

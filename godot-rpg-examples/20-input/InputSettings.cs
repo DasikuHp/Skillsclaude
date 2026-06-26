@@ -97,7 +97,7 @@ public partial class InputSettings : Node
         {
             var action = new StringName(actionStr);
             if (!InputMap.HasAction(action))
-                InputMap.AddAction(action, 0.2f); // default real de AddAction es 0.5
+                InputMap.AddAction(action, 0.2f); // default de AddAction es 0.2f desde 4.4; explícito igualmente
             InputMap.ActionEraseEvents(action);
             // OJO: castea o lanza InvalidCastException.
             foreach (InputEvent ev in (Godot.Collections.Array<InputEvent>)cfg.GetValue("input", actionStr))

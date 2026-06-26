@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://b1dungeondock46x"]
+
+[node name="DungeonDock" type="VBoxContainer"]
+
+[node name="Label" type="Label" parent="."]
+text = "Dungeon Tools"

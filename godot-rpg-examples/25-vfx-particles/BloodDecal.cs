@@ -15,7 +15,12 @@ public partial class BloodDecal : Decal
         GlobalPosition = hitPos + surfaceNormal * 0.05f;
         if (!surfaceNormal.IsEqualApprox(Vector3.Up))
         {
-            LookAtFromPosition(GlobalPosition, GlobalPosition - surfaceNormal, Vector3.Up);
+            // ATASCO #9: si la normal es paralela al up, LookAt dispara
+            // 'Up vector and direction are aligned'. Ocurre en suelo (normal +Y)
+            // y en TECHO (normal -Y): -surfaceNormal queda paralelo a +Y.
+            // Usamos un up alternativo cuando la normal casi se alinea con +Y.
+            Vector3 up = Mathf.Abs(surfaceNormal.Dot(Vector3.Up)) < 0.99f ? Vector3.Up : Vector3.Forward;
+            LookAtFromPosition(GlobalPosition, GlobalPosition - surfaceNormal, up);
             RotateObjectLocal(Vector3.Right, -Mathf.Pi / 2f); // -Z -> -Y
         }
         AlbedoMix = 1.0f;

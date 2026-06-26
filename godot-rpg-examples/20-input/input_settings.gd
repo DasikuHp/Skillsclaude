@@ -71,7 +71,7 @@ func load_or_default() -> void:
 	for action_str: String in cfg.get_section_keys("input"):
 		var action := StringName(action_str)
 		if not InputMap.has_action(action):
-			InputMap.add_action(action, 0.2)  # OJO: default de add_action es 0.5
+			InputMap.add_action(action, 0.2)  # default de add_action es 0.2 desde 4.4; lo pasamos explícito igualmente
 		InputMap.action_erase_events(action)
 		for ev: InputEvent in cfg.get_value("input", action_str):
 			InputMap.action_add_event(action, ev)

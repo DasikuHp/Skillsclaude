@@ -16,8 +16,13 @@ macos.release          = "res://bin/libexample.macos.template_release.framework"
 android.debug.arm64    = "res://bin/libexample.android.template_debug.arm64.so"
 android.release.arm64  = "res://bin/libexample.android.template_release.arm64.so"
 ; variantes web (thread mode DEBE casar con "Thread Support" del export):
-web.debug.threads.wasm32   = "res://bin/libexample.web.template_debug.threads.wasm32.wasm"
-web.release.threads.wasm32 = "res://bin/libexample.web.template_release.threads.wasm32.wasm"
+; OJO: el token .threads va SOLO en la CLAVE, nunca en el nombre del .wasm.
+; SCons produce lib<name>.web.template_debug.wasm32.wasm (con threads) y
+; lib<name>.web.template_debug.wasm32.nothreads.wasm (sin threads).
+web.debug.threads.wasm32   = "res://bin/libexample.web.template_debug.wasm32.wasm"
+web.release.threads.wasm32 = "res://bin/libexample.web.template_release.wasm32.wasm"
+web.debug.wasm32           = "res://bin/libexample.web.template_debug.wasm32.nothreads.wasm"
+web.release.wasm32         = "res://bin/libexample.web.template_release.wasm32.nothreads.wasm"
 
 [dependencies]
 ; libs C++ externas que tu binario necesite, por plataforma (evita Error 126 en Windows)
