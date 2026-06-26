@@ -1,0 +1,5 @@
+keys,en,es,ja,?context,?plural
+START_GAME,Start Game,Iniciar partida,ゲーム開始,,
+MENU_OPEN,Open,Abrir,開く,verb,
+QUIT,Quit,Salir,終了,,
+GREET_PLAYER,"Hello, {0}!","¡Hola, {0}!","こんにちは、{0}！",,

@@ -1,0 +1,29 @@
+Estructura de carpetas para RPG 3D (hibrida: feature-local + type-global)
+Convenciones: snake_case para archivos/carpetas (evita roturas case-sensitive en Linux/CI);
+PascalCase para nombres de nodo. Todos los .uid y .import VERSIONADOS.
+
+res://
+|-- project.godot
+|-- .gitignore
+|-- .gitattributes
+|-- export_presets.cfg        # versionado (sin credenciales)
+|-- icon.svg                  # icon.svg.import se genera y SE COMMITEA
+|-- autoload/                 # singletons: event_bus.gd, game_state.gd, save_manager.gd
+|-- actors/                   # feature-local: cada entidad con su escena + recursos
+|   |-- player/               #   player.tscn + player.gd + player.tscn.uid
+|   `-- enemies/
+|       `-- goblin/           #   goblin.tscn + goblin.gd + goblin_bt.tres
+|-- world/
+|   |-- maps/                 # escenas de zonas
+|   `-- nav/                  # bakes de NavigationRegion3D
+|-- systems/                  # logica pura sin escena: combat/, inventory/, dialogue/, quest/, save/
+|-- ui/                       # hud/, menus/, inventory_ui/ (GLoot)
+|-- data/                     # .tres tipados como datos: items, stats, enemigos (Resource-driven)
+|-- shaders/                  # type-global
+|-- themes/                   # type-global (.theme)
+|-- assets/                   # arte/audio crudo compartido -> candidatos a LFS
+|   |-- models/  *.glb
+|   |-- textures/
+|   |-- audio/
+|   `-- fonts/
+`-- addons/                   # plugins de terceros (NO tu codigo); commit completo del dir addons/<x>/

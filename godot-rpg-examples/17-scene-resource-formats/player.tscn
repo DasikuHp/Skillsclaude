@@ -1,0 +1,23 @@
+[gd_scene format=3 uid="uid://cecaux1sm7mo0"]
+
+[ext_resource type="Script" uid="uid://c82j4l3r4k4n2" path="res://src/player.gd" id="1_abc12"]
+[ext_resource type="Texture2D" uid="uid://bx8d2k9m1n0q3" path="res://art/player.png" id="2_qa3vy"]
+[ext_resource type="PackedScene" uid="uid://dq8r4t6w2x1k7" path="res://weapons/sword.tscn" id="3_xy987"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_k3m1"]
+radius = 0.5
+height = 2.0
+
+[node name="Player" type="CharacterBody3D"]
+script = ExtResource("1_abc12")
+
+[node name="Sprite" type="Sprite2D" parent="."]
+texture = ExtResource("2_qa3vy")
+
+[node name="Collision" type="CollisionShape3D" parent="."]
+shape = SubResource("CapsuleShape3D_k3m1")
+
+[node name="Sword" parent="." instance=ExtResource("3_xy987")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
+
+[connection signal="body_entered" from="Hurtbox" to="." method="_on_hurtbox_body_entered"]

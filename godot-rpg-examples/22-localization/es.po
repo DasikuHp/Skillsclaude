@@ -1,0 +1,18 @@
+# PO de ejemplo (gettext). nplurals DEBE coincidir con el numero de msgstr[].
+# Valida con: msgfmt -c es.po -o /dev/null
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "START_GAME"
+msgstr "Iniciar partida"
+
+msgctxt "verb"
+msgid "MENU_OPEN"
+msgstr "Abrir"
+
+msgid "%d enemy"
+msgid_plural "%d enemies"
+msgstr[0] "%d enemigo"
+msgstr[1] "%d enemigos"

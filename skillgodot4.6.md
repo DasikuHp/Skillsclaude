@@ -2290,7 +2290,7 @@ Referencias de arquitectura: [godot-open-rpg](https://github.com/gdquest-demos/g
 
 # Temas avanzados: shaders, importación, errores, depuración y C# (anti-stuck)
 
-Estas cinco secciones existen para que un agente de IA (o un dev) **no se quede atascado**: cubren los puntos donde el motor falla en silencio o con mensajes crípticos. Cada una trae el enfoque nativo, código real, los **mensajes de error literales** con su fix, y una ruta de desatasque. Notas con fuentes en [`godot-rpg-research/`](./godot-rpg-research/).
+Estas secciones existen para que un agente de IA (o un dev) **no se quede atascado**: cubren los puntos donde el motor falla en silencio o con mensajes crípticos. Cada una trae el enfoque nativo, código real, los **mensajes de error literales** con su fix, y una ruta de desatasque. Notas con fuentes en [`godot-rpg-research/`](./godot-rpg-research/).
 
 ## 11. Shaders para RPG
 
@@ -2979,6 +2979,1517 @@ Ver bloque de ejemplos (`Player.cs`, `Inventory.cs`, `Game.csproj`). Puntos idio
 - **Opcional, async serio:** `GDTask` (Fractural, port de UniTask) para `GDTask`, delays sin alocar y cancelación integrada en cinemáticas/secuencias de combate encadenadas. Para 2-3 awaits sueltos, `ToSignal` + `CancellationTokenSource` es suficiente — no metas la dependencia.
 
 **Veredicto ponytail:** el mejor código C# en Godot 4.6 es el que NO escribes: deja que Godot genere el `.csproj`, que los source generators generen señales/exports, que `Resource`/`RefCounted` se autogestionen por refcount, y que `ToSignal` cubra el async simple. El código que SÍ debes escribir es el "core" CPU-intensivo (stats, IA, saves) que justifica salir de GDScript. Y memoriza tres reflejos: `partial` en toda clase Godot, `Godot.Collections.*` en las fronteras del engine, e `IsInstanceValid` antes de tocar cualquier ref que pudo morir. Esos tres reflejos evitan el 90% de los atascos.
+
+## 16. Auto-verificación headless, CLI y testing
+
+> **Para una IA que NO ve el editor.** El objetivo de este tema es cerrar el lazo **edito → compruebo → corrijo** sin ventana. La pieza central es `godot --headless` + **parseo de stdout/stderr** (no del exit code en la mayoría de los pasos). Versión de referencia: Godot 4.6.x (release 2026-01-27).
+
+### Enfoque nativo recomendado
+
+Pipeline obligatorio de 4 fases, de la más barata a la más cara. **No te saltes la Fase 0**: es la causa #1 de atascos.
+
+```
+0. --import --quit-after 2     → puebla .godot/ (caché de import, class_name, uid://)
+1. --check-only / tool propio  → parseo de GDScript (fail-fast barato)
+2. --headless --quit-after N   → smoke test: ¿arranca el MainLoop de verdad?
+3. GUT / gdUnit4               → tests con exit code FIABLE
+(4. --export-* )               → el último, el más frágil
+```
+
+**Regla de oro:** B, C y 4 dependen de que A haya poblado `.godot/`. La carpeta `.godot/` está en `.gitignore` por defecto, así que **en cualquier checkout limpio (lo que ve la IA al clonar) no existe**. Los errores de "recurso no importado" / "Could not find base class" / "Unrecognized UID" tras un clon limpio son **caché, no código**: no edites el script, reimporta.
+
+#### CLI exacto de Godot 4.6 (flags verificados)
+
+| Flag | Comportamiento |
+|---|---|
+| `--headless` | Sin ventana/GPU; implica driver dummy de video y audio. Obligatorio en CI. |
+| `--path <dir>` | Directorio del proyecto (donde está `project.godot`). |
+| `--import` | Reimporta assets y recrea `.godot/imported`, registra `class_name`/`uid://`. |
+| `--quit-after <N>` | Sale tras **N** frames. Usa **2** para import (ver pitfall). |
+| `--quit` | Sale tras el primer frame idle. **Evítalo para import** (ver pitfall). |
+| `--check-only` | Carga y parsea el script y cierra (no ejecuta). Se usa con `--script`. |
+| `-s, --script <res://...>` | Ejecuta un script (`SceneTree`/`MainLoop`/`EditorScript`). |
+| `-e, --editor` | Modo editor (necesario para `EditorScript`/`EditorInterface`). |
+| `--export-release <preset> <out>` / `--export-debug <preset> <out>` | Exporta con preset de `export_presets.cfg`. |
+| `--verbose` (`-v`) | Salida detallada; útil para ver qué recurso falla. |
+| `--doctool [path]` | Vuelca el XML de doc de clases (verificar APIs disponibles). |
+
+Doc oficial: `https://docs.godotengine.org/en/4.6/tutorials/editor/command_line_tutorial.html`
+
+### Fase 0 — Warm-up de imports
+
+```bash
+# Puebla .godot/ : reimporta assets, registra class_name y uid://.
+# NUNCA uses --quit aquí; usa --quit-after 2 (un frame importa, el segundo asienta dependencias).
+godot --headless --path . --import --quit-after 2 --verbose
+# Si persisten warnings de uid://, una SEGUNDA pasada los resuelve:
+godot --headless --path . --import --quit-after 2
+```
+
+Algunas builds 4.x salen solas con un `--import` "pelado" y bastan; pero `--quit-after 2` es el patrón seguro y portable que no se cuelga ni sale antes de tiempo (GH-77508). Para proyectos migrados desde <4.4: corre **Project > Tools > Upgrade Project Files** una vez en el editor (o `godot --headless --editor --path . --quit-after 2`) para generar los `.uid`. 4.6 ya no escribe `load_steps` en los `.tscn`; no lo edites a mano.
+
+### Fase 1 — Validación de sintaxis
+
+Dos rutas. La primera es trivial; la segunda es **más fiable** y la recomendada para un agente.
+
+```bash
+# Ruta A: built-in, un archivo. ¡OJO con el exit code (ver pitfalls)! Decide por TEXTO:
+out=$(godot --headless --path . --check-only --script res://scripts/player.gd 2>&1)
+echo "$out"
+if echo "$out" | grep -qiE 'SCRIPT ERROR|Parse Error|Compile Error|Failed to load script'; then
+  echo "FAIL: parse error"; exit 1
+fi
+echo "OK"
+```
+
+```bash
+# Ruta B (RECOMENDADA): tool script propio que valida TODOS los .gd y controla su PROPIO exit code.
+godot --headless --path . --script res://ci/validate_all.gd
+echo "exit=$?"   # FIABLE: lo fijamos nosotros con quit(N)
+```
+
+La Ruta B esquiva el bug histórico del exit code de `--check-only` porque **tú** controlas `quit(N)`. Ver `examples/validate_all.gd`.
+
+### Fase 2 — Smoke test (¿ARRANCA, no solo compila?)
+
+Compilar no es arrancar: un autoload que peta en `_ready()`, una escena principal con un nodo nulo, etc., solo se ven booteando.
+
+```bash
+# Arranca el juego real (autoloads + escena principal), corre N frames y sale.
+# timeout + </dev/null son OBLIGATORIOS (ver pitfall del debugger invisible).
+out=$(timeout 120 godot --headless --path . --quit-after 90 </dev/null 2>&1)
+rc=$?
+echo "$out"
+if [ "$rc" = "124" ]; then echo "BOOT HANG (timeout)"; exit 1; fi
+if echo "$out" | grep -qiE 'SCRIPT ERROR|Cannot call method|Nonexistent function|Invalid (get|set|call)|^ERROR:'; then
+  echo "BOOT FAILED"; exit 1
+fi
+echo "BOOT OK"
+```
+
+### Fase 3 — Testing (exit code fiable)
+
+| | **GUT** | **gdUnit4** |
+|---|---|---|
+| Lenguaje | GDScript | GDScript **+ C#/.NET 8** |
+| Runner CLI | `-s res://addons/gut/gut_cmdln.gd ... -gexit` | `addons/gdUnit4/runtest.sh` |
+| Exit code | 0 pasan / 1 falla (con `-gexit`) | 0/1 (JUnit XML + HTML) |
+| Mocking/scene runner | básico | mocking, spies, fuzzing, scene runner |
+| GitHub Action oficial | no | `gdunit4-action` |
+| Code coverage | sí (addon comunitario) | no nativo |
+
+```bash
+# GUT (GDScript). Exit code FIABLE con -gexit.
+timeout 300 godot --headless --path . \
+  -s res://addons/gut/gut_cmdln.gd \
+  -gdir=res://test -ginclude_subdirs -gexit </dev/null
+echo "exit=$?"   # 0 = todos pasan, 1 = algún fallo
+```
+
+```bash
+# gdUnit4 (GDScript o C#). --ignoreHeadlessMode es OBLIGATORIO en headless.
+export GODOT_BIN=/usr/local/bin/godot
+chmod +x ./addons/gdUnit4/runtest.sh
+./addons/gdUnit4/runtest.sh -a res://test --ignoreHeadlessMode --continue
+```
+
+**Recomendación:** GDScript puro + quieres coverage → **GUT**. Mezclas C# (.NET 8) o quieres scene runner/mocks + Action oficial → **gdUnit4**. **No mezcles los dos** en el mismo repo. En todos los casos exporta `GODOT_DISABLE_LEAK_CHECKS=1` para que los "ObjectDB instances leaked" no contaminen el exit code (libera igual tus objetos con `free()`/`autofree()`).
+
+### Pitfalls y mensajes de error literales
+
+**P1 — El exit code de `--check-only` MIENTE (el peor para una IA).** Históricamente devolvió siempre **0** con error de parseo (GH-33895), luego siempre **1** con script válido (GH-54087), y da falsos positivos por no descubrir autoloads (GH-78587). El bug genérico de no propagar exit no-cero está en GH-85062.
+→ **Fix:** no uses `$?` con `--check-only`. **Grepea `SCRIPT ERROR` / `Parse Error` en stdout/stderr**, o usa el tool script propio con `quit(N)`. El error literal sí es fiable y trae archivo:línea:
+```
+SCRIPT ERROR: Parse Error: Identifier "helth" not declared in the current scope.
+          at: GDScript::reload (res://scripts/player.gd:42)
+```
+La IA usa ese `res://...:LINEA` para auto-corregir.
+
+**P2 — Checkout limpio sin `.godot/` → "errores de código" que no lo son.** Mensajes literales:
+```
+ERROR: Failed loading resource: res://.godot/imported/icon.svg-<hash>.ctex.
+       Make sure resources have been imported by opening the project in the editor at least once.
+SCRIPT ERROR: Parse Error: Could not find base class "MyBaseClass".
+WARNING: Unrecognized UID: "uid://abc123" — using text path instead.
+```
+→ **Fix:** Fase 0 (`--import --quit-after 2`), a veces **doble pasada**. (GH-71521, GH-93424, GH-115205; UID changes article.)
+
+**P3 — El DEBUGGER INTERACTIVO INVISIBLE cuelga el CI para siempre.** Ante un error de runtime (o incluso sintaxis en carga, GH-85699) headless cae a un prompt esperando stdin:
+```
+Debugger Break, Reason: 'assertion failed'
+debug>
+```
+La IA, que no ve nada, espera output que nunca llega.
+→ **Fix:** SIEMPRE `--quit-after N` + `timeout 120 ...` + `</dev/null`. No es opcional. (GH-51387, GH-42465.)
+
+**P4 — `--import --quit` / `--quit-after 1` salen ANTES de importar, o devuelven exit 1 espurio.** (GH-77508, GH-83449.)
+→ **Fix:** usa `--quit-after 2`; en el paso de import **no juzgues por exit code**, verifica por log.
+
+**P5 — Tool scripts con clases de editor revientan headless.** `@tool` que usa `EditorInterface`/`EditorPlugin` en runtime falla con parse error (GH-91713).
+→ **Fix:** envuelve esas llamadas en `if Engine.is_editor_hint():` y nunca las invoques en runtime headless.
+
+**P6 — `--check-only` NO muestra warnings.** Solo errores; los warnings del editor (typed dicts mal usados, narrowing) requieren LSP/editor (forum 124343/132160).
+→ **Fix:** configura `[debug] gdscript/warnings/...` como errores en `project.godot` y trátalos en tests.
+
+**P7 — Export "verde" con binario roto.** `--export-release` no siempre propaga exit no-cero (GH-83042/85062); se congela si falta `.godot/` (GH-95287, GH-71521); faltan templates:
+```
+No export template found at the expected path .../export_templates/4.6.stable/...
+```
+→ **Fix:** importa primero; verifica que el artefacto existe y pesa >0 (`test -s out`) + grep `ERROR` en el log. Templates en `~/.local/share/godot/export_templates/4.6.stable/` o usa imagen `barichello/godot-ci`. C# **NO** exporta a web (web = Compatibility, sin .NET).
+
+**P8 — GUT/gdUnit4 "no encuentra tests" o exit 0 falso.** Falta `-gexit` (GUT) o `--ignoreHeadlessMode` (gdUnit4). GUT desalineado da `Invalid call. Nonexistent function ... GutRunner.gd:112` (GH-Gut 491). gdUnit4 desalineado: `Could not find type GdUnitHtmlReport` (GD-345) / load error en CI (GD-487).
+→ **Fix:** añade el flag correcto; alinea la versión del addon con Godot 4.6; haz Fase 0 antes.
+
+### Cómo no quedarte atascado
+
+El bucle de auto-corrección de la IA es:
+```
+import (--quit-after 2)
+  → validate_all.gd (exit code propio FIABLE)
+  → leer "res://archivo.gd:LINEA" del SCRIPT ERROR
+  → editar esa línea
+  → re-validar
+  → smoke (--quit-after 90, con timeout + </dev/null)
+  → tests (GUT -gexit / gdUnit4 --ignoreHeadlessMode)
+```
+Tres mandamientos: **(1)** import primero, siempre; **(2)** la verdad está en stdout/stderr, no en `$?`, salvo en GUT/gdUnit4; **(3)** nunca lances headless sin `timeout ... </dev/null`.
+
+### Addon vs construirlo
+
+- **Validación de parseo: built-in + 20 líneas propias.** `--check-only` ya está en el engine; el tool script `validate_all.gd` (que controla su exit code) es más fiable que `--check-only` y trivial de construir → **construir gana aquí**.
+- **Testing: usa addon, NO construyas.** GUT o gdUnit4 resuelven exit codes, mocking y scene runner; reinventar un runner es regalar bugs.
+
+**Veredicto ponytail:** el mejor código aquí es el que no escribes en el runner de tests (GUT/gdUnit4 ya existen y dan el único exit code fiable), pero **sí** escribes el tool script de validación de 20 líneas: es más barato y más fiable que pelearte con un exit code de `--check-only` que lleva años mintiendo. Importa primero, lee el texto (no `$?`), y blinda cada invocación con `timeout`+`</dev/null` para no morir en un debugger que no puedes ver.
+
+## 17. Formatos .tscn/.tres/project.godot y UIDs
+
+Estos archivos son texto tipo INI que el editor de Godot trata como **fuente de verdad regenerable**. Una IA que NO ve el editor puede generarlos y editarlos a mano, pero el parser es **estricto y de una sola pasada**: orden de secciones, IDs string entre comillas, formato de tipos y referencias deben ser exactos. El campo de minas #1 son los **UIDs**: inventarlos produce warnings y refs frágiles. La regla de oro: genera el contenido determinista a mano, pero **deja que Godot asigne/repare los UIDs** (re-guardado en editor o `--headless --import`).
+
+### Enfoque nativo recomendado
+
+No necesitas ningún addon para generar `.tscn`/`.tres`/`project.godot`: son texto, y para crear recursos por código los singletons del core (`ResourceSaver`, `ResourceUID`, `ResourceLoader`) bastan. El "addon canónico" para regenerar UIDs y cache es el propio engine vía `godot --headless --import`.
+
+**Lo que cambió en 4.6 (verificado en la guía oficial de upgrade):**
+
+1. **`load_steps` se eliminó del header.** En 4.6 el engine ya **no escribe** `load_steps` al guardar (seguía siendo solo para la barra de progreso, y ensuciaba diffs/rebases en VCS). Sigue parseándolo si está presente por compatibilidad, pero lo borra al re-guardar. **Una IA generando escenas 4.6 NO debe escribir `load_steps`.** Es el primer red flag que delata texto generado con docs viejos.
+2. **Los nodos ahora guardan un UID propio en la escena** para rastrearlos al mover/renombrar (refactor más robusto). Es retro/forward-compatible (escenas 4.5 cargan en 4.6 y viceversa). No lo escribas a mano; aparece solo al re-guardar en el editor.
+3. **`load_steps` + UIDs de nodo = diff masivo** la primera vez que abres+guardas un proyecto 4.5 en 4.6. Hazlo en un commit aislado tras `Project > Tools > Upgrade Project Files...`.
+
+**Header canónico 4.6 (sin `load_steps`):**
+
+```gdscript
+[gd_scene format=3 uid="uid://cecaux1sm7mo0"]
+```
+```gdscript
+[gd_resource type="Resource" script_class="ItemData" format=3 uid="uid://b3qf7x2k9m1n0"]
+```
+
+`format=3` es obligatorio en 4.x (`format=2` = Godot 3). Ver ejemplos completos abajo.
+
+**Reglas de formato que rompen al editar a mano:**
+
+- **Orden de secciones, no reordenar:** `[gd_scene]` → todos los `[ext_resource]` → todos los `[sub_resource]` (en orden topológico: si uno referencia a otro, va después) → `[node]` → `[connection]` → `[editable]` opcional. Un `[node]` antes de su recurso = parse error de una pasada.
+- **IDs son STRING entre comillas** (4.x): `id="2_abc12"`, se referencia con `ExtResource("2_abc12")` / `SubResource("CapsuleShape3D_k3m1")`. Enteros pelados (`id=2`, `ExtResource(2)`) son sintaxis de Godot 3 → corrupción. Cada `id="X"` debe casar EXACTO (comillas incluidas) con cada `ExtResource("X")`/`SubResource("X")`.
+- **Paths de nodo relativos al root, SIN el nombre del root.** El root no lleva `parent=`. Hijos directos: `parent="."`. Nietos: `parent="Collision"` (no `parent="Player/Collision"`).
+- **`instance=ExtResource(...)` XOR `type="..."`**, nunca ambos en el mismo `[node]`.
+- **Literales de tipo:** `Vector3(0, 1, 0)`, `Color(1, 0, 0, 1)`, `Transform3D(...)` = **12 floats** (basis 9 + origen 3, NO 16), `Transform2D` = 6. `NodePath`: `^"Path/Node"`. `StringName`: `&"nombre"`. Typed arrays/dicts: `Array[int]([1, 2, 3])`, `Dictionary[StringName, int]({})`.
+- **Propiedades en valor por defecto no se escriben** (el editor las descarta al re-guardar). No luches contra ello.
+
+**UIDs y archivos `.uid` (desde 4.4):**
+
+- Escenas/recursos importados guardan su UID en su propio header (`uid="uid://..."`). **No tienen sidecar.**
+- Scripts `.gd` y shaders `.gdshader` son texto plano sin sitio para metadata → reciben un **sidecar `player.gd.uid`** cuyo contenido es una sola línea: `uid://...`.
+- El mapa `uid:// → res://ruta` vive en `.godot/uid_cache.bin` (binario, NO se commitea). Por eso un UID inventado a mano que no existe en la cache produce warning hasta el reimport.
+
+**Cargar/resolver por UID (sobrevive a movimientos de fichero):**
+
+```gdscript
+var scn := load("uid://cecaux1sm7mo0") as PackedScene   # load() acepta uid:// directo
+var id := ResourceUID.text_to_id("uid://cecaux1sm7mo0")
+if ResourceUID.has_id(id):
+    print(ResourceUID.get_id_path(id))                  # -> res://main.tscn
+```
+
+### Pitfalls y mensajes de error literales
+
+- **`ext_resource, invalid UID: uid://<x> - using text path instead`** — El `uid://` no está en `uid_cache.bin` (lo inventaste, borraste `.godot/`, o no commiteaste el `.uid`). NO es error duro: el `path=` aún resuelve y solo emite warning. **Fix:** re-guardar la escena en el editor, o `godot --headless --import` para reconstruir la cache, o `Project > Tools > Upgrade Project Files`. Si quieres limpiar a mano, borra el atributo ` uid="..."` roto del `ext_resource` y deja que Godot lo reasigne al guardar.
+- **`...invalid UID ... and there's no fallback at set path`** — UID inválido **y** el `path=` también roto (archivo movido). Esto SÍ es error duro: la escena no carga. Restaura el archivo o corrige `path=`.
+- **`Parse Error: [ext_resource] referenced non-existent resource` / `Scene file appears to be invalid/corrupt`** — Sección fuera de orden, `id` sin comillas, `format` incorrecto, `ExtResource("X")`/`SubResource("X")` apuntando a un `id` no declarado, `parent=` a nodo inexistente, o literal mal formado (`Transform3D` con nº de floats incorrecto). **Fix:** grep de cada `id="..."` contra cada referencia; verificar 12 floats en `Transform3D`.
+- **Autoload "existe pero no carga":** omitir el prefijo `*` en `[autoload]` → singleton deshabilitado → `Identifier "GameState" not declared`. El valor debe ser `Nombre="*res://..."`.
+- **`[input]` editado a mano:** los `InputEvent` se serializan como `Object(InputEventKey, "physical_keycode":4194309, ...)` con decenas de campos y keycodes físicos vs lógicos. Extremadamente frágil. **No lo edites a mano**; usa el editor o `InputMap.add_action()` por código en un autoload.
+- **`Invalid type in property` al cargar (4.6 específico):** las props de *nombre de animación* de `AnimationPlayer` (`current_animation`, `assigned_animation`, `autoplay`) pasaron de `String` a `StringName` (GH-110767). En `.tscn` usa `current_animation = &"walk"`. NO afecta a nombres de track.
+- **`ResourceSaver.save` falla con `ERR_CANT_OPEN`:** la carpeta `res://` destino no existe (Godot NO crea dirs). Llama `DirAccess.make_dir_recursive_absolute()` primero. SIEMPRE comprueba `err == OK`.
+- **`ResourceUID.get_id_path()` devuelve inválido/-1 en proyecto EXPORTADO** (godot#75617). No dependas de resolver UID→path en runtime empaquetado; carga por `uid://` directo con `load()`, que sí funciona empaquetado.
+- **C# NO corre en export web** (renderer Compatibility). Si el target incluye web, escribe el save/load en GDScript.
+- **Duplicate UID** (copy-paste de archivos fuera del editor): dos recursos con el mismo `uid://`. No hay autofix; borra el `.uid` de uno y re-guarda, o `ResourceUID.create_id()`.
+
+### Cómo no quedarte atascado
+
+Flujo headless para una IA ciega tras generar/editar archivos:
+
+```bash
+# 1. Validar SINTAXIS de un script (NO valida .tscn/.tres)
+godot --headless --check-only --script res://src/player.gd
+
+# 2. Reconstruir uid_cache.bin + reimportar (tras clone, mover archivos o UIDs inventados)
+godot --headless --import
+
+# 3. Cargar escenas y cazar errores de parseo en el log
+godot --headless --quit-after 2 --verbose 2>&1 | grep -iE "error|invalid uid|parse"
+```
+
+- **`--check-only` solo valida GDScript, NO escenas.** Las escenas solo se validan al cargarlas: arranca headless y parsea el stderr.
+- **Pitfall CI muy documentado:** con `.godot/` ignorado, en un clone fresco los recursos no están importados → `--export-release` falla. El workaround `--headless --editor --quit` NO es fiable. Usa **`--quit-after 2`** (con `--quit` o `--quit-after 1` el import no termina, issue #77508). Corre un paso `--headless --import` dedicado ANTES de exportar.
+- **Mover archivos fuera del editor:** mueve SIEMPRE el `.uid` (y el `.import` del asset) junto al archivo. `git mv player.gd nueva/player.gd && git mv player.gd.uid nueva/player.gd.uid`. Olvidar el `.uid` regenera un UID nuevo → todas las refs por UID viejo rotas.
+- **VCS:** ignora **toda** la carpeta `.godot/`. **COMMITEA** los `*.uid` (son estado del proyecto, no output; ignorarlos rompe los enlaces escena↔script para todo colaborador) y los `*.import` de assets (contienen el UID estable del asset). `.gitignore` 4.x oficial = básicamente solo `.godot/`. Genera metadata con `Project > Version Control > Generate Version Control Metadata`.
+
+### Addon vs construirlo
+
+- **Generar `.tscn`/`.tres`/`project.godot` a mano: construir.** Es texto determinista; la skill es justamente esto. Pero omite `uid://` inventados y valida con arranque headless.
+- **InputMap en `project.godot`: NO a mano.** Usa `InputMap.add_action()` por código o el editor.
+- **Regenerar UIDs/cache: usa el engine** (`--headless --import`), no reinventes el parser.
+- **Cargar `.tres` desde savegames NO confiables del jugador: usa addon.** `ResourceLoader.load()` ejecuta scripts/sub-recursos embebidos → vector de RCE. Para datos no confiables usa [godot-safe-resource-loader](https://github.com/derkork/godot-safe-resource-loader). Para data interna definida por ti, `ResourceLoader` normal está bien.
+
+**Veredicto ponytail:** el mejor `.tscn` es el que no escribes a mano. Genera por código con `ResourceSaver.save()` (que asigna y persiste el UID por ti) o deja que el editor sea la fuente de verdad; reserva la edición a mano para cambios deterministas (cabeceras, nodos, autoloads) y nunca inventes un `uid://`. Cuando dudes, `godot --headless --import` y parsea el log: es la red de seguridad que evita el atasco.
+
+## 18. Cheat-sheet GDScript 2.0 y C# (vs Godot 3)
+
+> **El error nº1 de una IA con Godot es escupir "Godot-3-ismos".** Un LLM entrenado con código de GitHub 2018-2022 genera con total confianza `export var`, `onready var`, `yield(...)`, `emit_signal(...)`, `connect("x", self, "y")`, `tool`, `.metodo()` para super. **Todo eso parsea distinto o ni parsea en GDScript 2.0 (Godot 4.6).** Y como la IA *no ve el editor*, no nota que el nodo nunca se conectó, que el `.tscn` quedó con referencias rotas, o que el shader compila negro. Esta sección es una **tabla de traducción G3→4.6 + bloques "MAL vs BIEN"** indexados por **mensaje de error literal**, porque un agente sin editor encuentra el fallo por su *texto*, no por el concepto.
+
+Verificado contra **Godot 4.6** (release 2026-01-27, mantenimiento ~4.6.3). GDScript 2.0, C# .NET 8. Jolt es el physics 3D por defecto en proyectos NUEVOS. D3D12 por defecto en Windows nuevo. Renderers: Forward+ / Mobile / Compatibility (web = Compatibility, **sin C#**).
+
+---
+
+### Enfoque nativo recomendado
+
+GDScript 2.0, tipado estático, señales como objetos, `await`, `@abstract`, source generators de C# y el CLI headless son **core de 4.6**. No requieren ningún addon. La skill debe ser **doc-only / cheat-sheet**, no un plugin.
+
+#### Tabla maestra Godot 3 (MAL) → Godot 4.6 (BIEN)
+
+| Concepto | Godot 3 (MAL en 4.6) | Godot 4.6 (BIEN) |
+|---|---|---|
+| Export | `export var hp = 100` | `@export var hp: int = 100` |
+| Export rango | `export(int, 1, 100) var x` | `@export_range(1, 100, 1, "or_greater") var x: int = 50` |
+| Onready | `onready var spr = $Sprite` | `@onready var spr: Sprite2D = $Sprite2D` |
+| Tool | `tool` (1ª línea) | `@tool` (1ª línea, anotación) |
+| Coroutine | `yield(get_tree(), "idle_frame")` | `await get_tree().process_frame` |
+| Coroutine timer | `yield(get_tree().create_timer(2),"timeout")` | `await get_tree().create_timer(2.0).timeout` |
+| Coroutine señal | `yield(obj, "done")` | `await obj.done` |
+| Declarar señal | `signal hit(amount)` | `signal hit(amount: int)` (params tipados) |
+| Emitir señal | `emit_signal("hit", 10)` | `hit.emit(10)` |
+| Conectar | `obj.connect("hit", self, "_on_hit")` | `obj.hit.connect(_on_hit)` |
+| Conectar con flags | `connect("hit", self, "_on", [], CONNECT_DEFERRED)` | `obj.hit.connect(_on_hit, CONNECT_DEFERRED)` |
+| Array tipado | `var a = []` | `var a: Array[int] = []` |
+| Dict tipado | `var d = {}` | `var d: Dictionary[String, int] = {}` (desde 4.4) |
+| StringName literal | `"jump"` (String) | `&"jump"` |
+| NodePath literal | `"../Player"` | `^"../Player"` |
+| Static var/func | (no existía) | `static var counter: int = 0` / `static func f()` |
+| Lambda | (no existía) | `var f := func(x): return x*2` → `f.call(2)` |
+| super | `.method()` | `super.method()` / `super()` en `_ready`/`_init` |
+| Instanciar escena | `scene.instance()` | `scene.instantiate()` |
+| Abstracta | (no existía / hack `push_error`) | `@abstract class_name Base` / `@abstract func f()` (desde 4.5) |
+| RNG en rango | `randi() % n` | `randi_range(0, n-1)` (preferido) |
+| Shader screen tex | `SCREEN_TEXTURE` | `uniform sampler2D t : hint_screen_texture` |
+| Shader depth tex | `DEPTH_TEXTURE` | `uniform sampler2D t : hint_depth_texture` |
+
+#### Señales: objeto de primera clase + corrutinas
+
+En 4.6 una señal **es una propiedad**. `emit_signal("x")` y `Object.connect("x", Callable)` siguen existiendo, pero úsalos **solo si el nombre es dinámico** (string en runtime). Para todo lo demás: `senal.emit()` / `senal.connect(callable)`.
+
+```gdscript
+signal died(score: int)              # args tipados
+func _ready() -> void:
+    died.connect(_on_died)           # Callable, sin string ni self
+    died.connect(func(s): print(s))  # lambda como Callable
+    died.connect(_on_died.bind("extra"))  # bind para argumentos extra
+    died.emit(100)                   # .emit, NO emit_signal
+    await get_tree().create_timer(1.0).timeout  # await + propiedad-señal
+```
+
+**await devuelve el argumento de la señal** (clave en RPGs: turnos, cutscenes). Si la señal emite 1 arg, lo recibes directo; si emite varios, recibes un `Array`:
+
+```gdscript
+var result = await $AttackPopup.choice_made   # pausa sin bloquear el hilo
+```
+
+#### Tipos estáticos: arrays y dictionaries tipados
+
+```gdscript
+var loot: Array[ItemResource] = []
+var stats: Dictionary[String, int] = { "atk": 10, "def": 5 }  # Dictionary[K,V] desde 4.4
+```
+
+#### preload vs load, static, @abstract, super
+
+```gdscript
+const Goblin := preload("res://enemies/goblin.tscn")   # PARSE-time, path constante
+var enemy := load("res://enemies/%s.tscn" % id)        # RUNTIME, path dinámico
+
+@abstract class_name Enemy extends CharacterBody3D
+@abstract func take_damage(amount: int) -> void        # los hijos DEBEN override
+
+func _ready() -> void:
+    super()                  # llama al _ready del padre (NO ".ready()")
+func take_damage(a: int) -> void:
+    super.take_damage(a)     # super.metodo, NO ".take_damage"
+```
+
+#### C# (.NET 8): la clase DEBE ser `partial`
+
+C# en Godot 4 usa **source generators**. Sin `partial`, no se generan `SignalName`/`PropertyName`/`MethodName` y la build falla.
+
+```csharp
+public partial class Player : CharacterBody3D   // partial OBLIGATORIO
+{
+    [Export] public int Hp { get; set; } = 100;
+    [Signal] public delegate void DiedEventHandler(int score);  // sufijo EventHandler OBLIGATORIO
+
+    public override void _Ready()
+    {
+        Camera3D cam = GetNode<Camera3D>("Camera3D");  // genérico tipado, sin cast manual
+        Died += s => GD.Print("muerto ", s);            // event C# nativo
+        EmitSignal(SignalName.Died, 42);                // StringName generado, NO string mágico
+        GD.Print("ready");                              // GD.Print, NO Console.WriteLine
+    }
+}
+```
+
+- Colecciones que **cruzan a la API del motor** (exports, señales): `Godot.Collections.Array<T>` / `Godot.Collections.Dictionary`. `System.Collections.Generic.List<T>` **no se marshalea** a métodos del engine. Los `Packed*Array` mapean a arrays nativos (`int[]`, etc.).
+- Usa `SignalName.X` / `MethodName.X` / `PropertyName.X` en hot-paths: un string literal asigna una `StringName` nueva en cada llamada.
+
+---
+
+### Pitfalls y mensajes de error literales
+
+| Mensaje literal | Causa | Fix |
+|---|---|---|
+| `Expected end of statement after variable declaration, found "var"` | `export var` / `onready var` (sintaxis G3) | `@export var` / `@onready var` |
+| `Function "yield()" not found in base self` | `yield(...)` de G3 | `await señal` |
+| `Invalid type in function 'connect' ... expected to be a Callable but is "String"` | `connect("x", self, "y")` (firma G3 de 3 args) | `obj.x.connect(_on_x)` |
+| `preload() requires a constant expression` | `preload(ruta_variable)` | usar `load(...)` para paths dinámicos |
+| `Trying to assign an array of type "Array" to a variable of type "Array[String]"` | asignar array sin tipo a uno tipado | `var t: Array[String] = []; t.assign(untyped)` |
+| `Expected closing "]" after array type` | **anidamiento de tipos** `Dictionary[String, Array[String]]` o `Array[Array[int]]` — NO soportado (GH-proposals 12224) | tipo externo sin parametrizar el interno (`Array[Array]`) o un `Resource` dedicado |
+| `Trying to assign a dictionary of type 'Dictionary[K, Nil]' to ... 'Dictionary[K, int]'` | pasar dict tipado concreto donde se espera `Dictionary[K, Variant]` — Variant NO es supertipo (GH-105843) | no anotar el parámetro como `Dictionary[K, Variant]`; usar el mismo tipo concreto o `Dictionary` sin parametrizar |
+| `Cannot instantiate abstract class "X"` | `X.new()` sobre clase `@abstract` | instanciar una subclase concreta (comportamiento deseado) |
+| `Annotation "@tool" must be at the top of the script` | anotación bajo otra declaración | mover `@tool`/anotaciones al inicio |
+| `Invalid call. Nonexistent function ... in base 'null instance'` (runtime) | usar `@onready var x` en `_init()` — aún es `null` | usar `x` solo desde `_ready()` en adelante |
+| `Cannot convert argument from String to StringName` (AnimationPlayer, 4.6) | `current_animation`/`assigned_animation`/`autoplay` pasaron de **String→StringName** (GH-110767); `get_queue()` → `StringName[]` | GDScript: usar `&"idle"`. **NO afecta nombres de track.** |
+| C#: `GD0001: Missing partial modifier on declaration of type 'X'` | falta `partial` | añadir `partial` |
+| C#: `... does not contain a definition for 'SignalName'` | falta `partial` (no se generó) | añadir `partial` |
+| C#: `GD0202: signal delegate must end with 'EventHandler'` | delegate de señal mal nombrado | `delegate void XEventHandler(...)` |
+| C#: `Can't emit non-existing signal "X"` (runtime) | falta sufijo `EventHandler` | renombrar el delegate (GH-82268) |
+| C#: `CS0246: type or namespace '...' could not be found` | frecuentemente **cache de build corrupta**, no tu código | `dotnet clean`, borrar `.godot/mono/` y `.mono/`, reconstruir (GH-68411) |
+| C#: error al compilar tras actualizar a 4.6 con `CurrentAnimation = "run"` | StringName breaking (GH-110767): C# NO es source-compatible | `anim.CurrentAnimation = (StringName)"run";` |
+| Shader: `Use of reserved keyword` / `Expected valid type hint after ':'` | `SCREEN_TEXTURE`/`DEPTH_TEXTURE` eliminados (PR #70967) | `uniform sampler2D t : hint_screen_texture, filter_linear_mipmap;` |
+| Inspector muestra "Resource" genérico en `@export var a: Array[MiTipo]` | el tipo se cargó con `preload` en vez de `class_name` (GH-109574) | dar `class_name` al tipo custom |
+| `Bug: Dictionary::operator[] used when there was no value` (al migrar 4.5→4.6) | acceso a clave inexistente en dict tipado (GH-115624) | `dict.get(key, default)` o `if key in dict` |
+
+---
+
+### Cómo no quedarte atascado
+
+Una IA sin editor falla por **estado invisible del proyecto**, no solo por sintaxis. Protocolo de desatasque:
+
+1. **Valida SIEMPRE por CLI antes de afirmar "funciona".** Un Godot-3-ismo salta como `Parse Error` aquí, gratis:
+   ```bash
+   godot --headless --check-only --script res://player.gd   # valida sintaxis sin abrir ventana
+   godot --headless --import                                 # reimporta assets, regenera .uid (evita "resource not found")
+   godot --headless --export-release "Linux" build/game.x86_64
+   godot --headless --quit-after 3 --verbose                 # smoke test: arranca, loguea y sale
+   ```
+2. **`.tscn` / `uid://` — la mina de editar a mano.** Desde 4.4 los recursos se referencian por `uid://...` + ficheros `.uid` sidecar; en 4.6 los `.tscn` **ya no escriben `load_steps`** en la cabecera y se guardan IDs de nodo únicos. **No inventes un `uid://`** (no hay forma determinística de derivarlo de la ruta): lee el `.uid` existente o deja que el editor lo genere. Tras tocar archivos a mano, instruye al humano: **`Project > Tools > Upgrade Project Files`** (no hay flag CLI 100% equivalente para reescribir `.tscn`). Avisa que una escena guardada en 4.5 produce **diffs grandes** al re-guardarse en 4.6 — es esperado, no un bug.
+3. **Las 3 acciones "solo-editor" que un agente debe delegar al humano:** (a) Upgrade Project Files; (b) asignar `class_name` al tipo custom para que `@export var a: Array[MiTipo]` ofrezca "New MiTipo"; (c) regenerar UIDs. La IA debe *instruir*, no inventar texto en el `.tscn`.
+4. **Plataforma/render invisible.** Pregunta o asume el renderer. **Web = Compatibility, SIN C#** → si el proyecto apunta a web, el gameplay debe ser GDScript. Los shaders de screen/depth dan textura negra/vacía en Compatibility/web (GH-97728) — "compila" no implica "funciona"; advierte siempre.
+5. **emit vs await.** `signal.emit()` devuelve `void`, **no es awaitable**. `await mi_senal` espera la *próxima* emisión. La API core no conoce las corrutinas: no puedes "await a todos los listeners" (GH-86862).
+6. **Nunca inventes API.** Ante la duda `emit_signal`/`.emit()`, `String`/`StringName`, verifica contra `docs.godotengine.org/en/4.6/classes/`.
+
+---
+
+### Addon vs construirlo
+
+| Necesidad | Recomendación | Por qué |
+|---|---|---|
+| Cheat-sheet / migración G3→4.6 | **Core, doc-only** | No hay addon fiable que convierta Godot-3-ismos en runtime. El conversor 3→4 es one-shot del editor. |
+| Físicas 3D | **No instales nada.** Jolt está integrado en 4.6 | El addon `godot-jolt` es **redundante/obsoleto** en 4.6. **Ojo:** Jolt es default solo en proyectos NUEVOS; un proyecto **migrado** sigue en Godot Physics hasta cambiar `physics/3d/physics_engine` en Project Settings. Recomendar "Jolt ya está activo" sin verificar es FALSO. |
+| Diálogos / cutscenes | **Addon: Dialogue Manager** (nathanhoad) | Editor de ramas, mantenido, MIT. Reinventarlo son semanas. |
+| Inventario / stats / items | **Construir con `Resource` + `@export`** | `class_name Item extends Resource` es trivial en 4.6; los addons te acoplan a su UI. |
+| Save/load | **Construir** con `ResourceSaver` + UIDs | En RPG quieres versionar tu schema tú mismo. |
+
+Regla: **addon para lo que tiene UX/editor complejo (diálogos); build-it-yourself para data+lógica**, porque el `Resource` tipado de 4.6 hace que construirlo salga más barato que aprender el addon.
+
+---
+
+**Veredicto ponytail:** el mejor código aquí es el que no escribes. Antes de generar una línea de GDScript/C#, **valídala con `godot --headless --check-only`** — es el sustituto del botón Play para un agente ciego. Reusa nodos y `Resource` nativos antes que código custom, deja que el editor reescriba `.tscn`/`uid://` (nunca a mano), y trata esta sección como un **índice por mensaje de error**: el modo de fallo dominante de un LLM no es no saber el concepto, es regurgitar Godot 3 con confianza. La tabla MAL→BIEN y los errores literales son el antídoto.
+
+## 19. Audio: música, SFX y buses
+
+Godot 4.6 (lanzado 2026-01-27, rama ~4.6.x) trae un sistema de audio completo: nada de lo que un RPG open-source necesita (música persistente, pool de SFX, ducking, capas adaptativas) requiere middleware externo. El enrutado es siempre el mismo: **`AudioStreamPlayer*` → bus (por nombre) → cadena de `AudioEffect` → bus padre → … → `Master` → salida**.
+
+### Enfoque nativo recomendado
+
+| Necesidad | Clase / API 4.6 | Tipo |
+|---|---|---|
+| Música global / UI / 2D no espacial | `AudioStreamPlayer` | Node |
+| SFX posicional 3D (RPG) | `AudioStreamPlayer3D` | Node |
+| SFX posicional 2D | `AudioStreamPlayer2D` | Node |
+| Volumen por categoría / mezcla | Audio Buses + `AudioServer` (singleton) | API |
+| Pool de SFX en un solo nodo | `AudioStreamPolyphonic` + `AudioStreamPlaybackPolyphonic` | Resource |
+| Música adaptativa por estado (combate↔exploración) | `AudioStreamInteractive` | Resource |
+| Playlist secuencial/aleatoria con crossfade | `AudioStreamPlaylist` | Resource |
+| Capas sincronizadas (stems) | `AudioStreamSynchronized` | Resource |
+| Layout de buses persistido | `AudioBusLayout` (`.tres`) | Resource |
+
+`AudioStreamInteractive/Playlist/Synchronized` viven en el módulo `interactive_music` (presente en builds oficiales desde 4.3). **Son Resources, no Nodes**: se asignan a `player.stream`, NUNCA `add_child(AudioStreamInteractive.new())`.
+
+Arquitectura RPG canónica:
+- **Música = autoload con `AudioStreamPlayer`** (sobrevive a `change_scene_to_*`).
+- **SFX 3D del mundo = nodos `AudioStreamPlayer3D`** colgando del emisor (mueren con la escena, que es lo correcto).
+- **SFX globales/UI = autoload con `AudioStreamPolyphonic`** (un nodo, N voces, sin instanciar nodos por disparo).
+- **Buses sugeridos:** `Master → Music`, `Master → SFX`, `Master → UI`, `Master → Ambient`, `Master → Voice`.
+
+#### El modelo de volumen: dB, no lineal (EL pitfall número uno)
+
+`volume_db` y `AudioServer.set_bus_volume_db()` están en **decibelios**, no en [0,1]. `volume_db = 0.0` es ganancia unidad (sin cambio), `-80.0` es silencio efectivo. Conectar un slider lineal [0,1] directo a `volume_db` da basura: `volume_db = 0.5` es +0.5 dB (casi imperceptible), NO "mitad de volumen". Convierte con `linear_to_db()` / `db_to_linear()` (globales de `@GlobalScope`).
+
+En 4.6 existen alternativas lineales verificadas que evitan toda la conversión manual:
+- `AudioStreamPlayer*.volume_linear` (propiedad 0..1; Godot la convierte a `volume_db` internamente).
+- `AudioServer.set_bus_volume_linear(idx, linear)` / `get_bus_volume_linear(idx)`.
+
+Para una IA que quiera blindar el código, `volume_linear` y `set_bus_volume_linear` son la ruta menos propensa a errores. Si usas dB: piso de silencio en **-80**, NUNCA `linear_to_db(0.0)` (devuelve `-inf` → al tweenear produce `NaN` y silencio permanente).
+
+#### Buses: direccionamiento mixto y fallback silencioso
+
+El nodo direcciona por nombre (`bus: StringName`, def `&"Master"`); la API de servidor usa índice: `AudioServer.get_bus_index("Music")` devuelve **-1** si no existe. **Pitfall crítico y silencioso (verificado en docs):** asignar `player.bus = "Music"` cuando el bus no existe NO lanza error — hace fallback a `"Master"`. Síntoma típico para una IA ciega: "el slider de música también baja los SFX" (ambos cayeron a Master). Sonda diagnóstica:
+
+```gdscript
+assert(AudioServer.get_bus_index("Music") != -1, "Bus 'Music' inexistente -> fallback silencioso a Master")
+```
+
+El layout es un `AudioBusLayout.tres`, ruta en `project.godot` bajo `[audio] buses/default_bus_layout`. **El `.tres` gana al arrancar**: si creas buses por código y además hay un `.tres`, el archivo manda. Para persistir buses creados por código: `AudioServer.generate_bus_layout()` → `ResourceSaver.save(layout, "res://default_bus_layout.tres")`. En 4.6 los `.tres`/`.tscn` ya **no escriben `load_steps`** y los recursos usan `uid://` + ficheros `.uid` (desde 4.4); tras tocar archivos a mano corre **Project → Tools → Upgrade Project Files** o `godot --headless --import`.
+
+#### SFX: polifonía vs pool
+
+Por defecto `AudioStreamPlayer*.max_polyphony = 1`: un segundo `play()` **corta** el anterior. Dos enfoques para solapar:
+
+- **Solapar UN tipo de sonido (pasos):** sube `max_polyphony` (p.ej. 8) en un solo player. Lo más simple.
+- **Pool real con control individual:** `AudioStreamPolyphonic` como `stream`; `play_stream()` devuelve un ID por voz, y controlas `set_stream_volume(id, db)` / `stop_stream(id)`. `play_stream` devuelve `INVALID_ID` si se alcanzó `polyphony` (def 32).
+
+**Cuándo NO usar el polifónico:** si tu lógica necesita "avísame cuando ESTE disparo terminó", `AudioStreamPlaybackPolyphonic` **no emite `finished` por stream** (issue abierto GH-88941). En ese caso usa un pool de `AudioStreamPlayer` reusados (cada uno emite su `finished`). El pool de nodos reusados también evita el churn de `new()`+`add_child()`+`queue_free()` por golpe, que causa stutter con muchas entidades.
+
+#### Música adaptativa / crossfade
+
+- `AudioStreamPlaylist`: clips secuenciales/aleatorios con `fade_time` (crossfade integrado, def 0.3s). Lo más simple para ambiente que rota.
+- `AudioStreamInteractive`: tabla de transiciones (immediate / end-of-clip / beat boundary) entre clips por estado. Disparo por código: `player.get_stream_playback().switch_to_clip_by_name(&"Combat")`. La tabla se construye en el editor.
+- `AudioStreamSynchronized`: capas (stems) en sync; subes/bajas volumen por capa con `set_sync_stream_volume(idx, db)`.
+
+Para un crossfade simple de 2 temas (lo habitual en un RPG), **no necesitas estas clases ni un addon**: dos `AudioStreamPlayer` + un `Tween` sobre `volume_db` bastan (ver ejemplo). Reserva `AudioStreamInteractive` para cuando el compositor entregue la transition table hecha; anidar `Interactive`+`Synchronized` es frágil y poco documentado (las transiciones por beat se desincronizan si las capas difieren en longitud).
+
+#### Ducking
+
+- **Manual con Tween (recomendado, predecible):** al iniciar diálogo, `Tween` sobre `volume_db` del bus Music a -12 dB; al terminar, vuelve a 0.
+- **Sidechain con `AudioEffectCompressor`:** propiedad `sidechain` (verificada como `StringName` = nombre del bus fuente). El compressor baja Music según el nivel de Voice. CAVEAT (GH-16036): el routing del sidechain históricamente tuvo bugs; verifica que el bus fuente exista y NO se envíe a sí mismo. Por eso el Tween manual es la opción "que no se atasca".
+
+#### AudioStreamPlayer3D: atenuación y zonas acústicas
+
+- `attenuation_model`: `INVERSE_DISTANCE` (def) / `INVERSE_SQUARE_DISTANCE` / `LOGARITHMIC` / `DISABLED`.
+- `unit_size` (def 10.0): controla la curva de atenuación — el parámetro que la gente no toca ("se oye igual en todo el mapa" o "no se oye nada").
+- `max_distance` (def 0.0 = sin límite, audible siempre): corta a cero y, clave para rendimiento, deja de mezclar lejos.
+- **Zonas acústicas sin código:** un `Area3D` con `audio_bus_override = true` + `audio_bus_name = "Cave"` redirige todo `AudioStreamPlayer3D` cuyo `area_mask` case con la capa del área (cueva → bus con reverb; agua → bus con `AudioEffectLowPassFilter`). Idiomático.
+
+**Pitfall confusión:** `unit_size` ≠ `max_distance`. Subir `unit_size` hace que llegue más lejos; `max_distance = 0` significa "infinito", no "cero alcance".
+
+### Pitfalls y mensajes de error literales
+
+- **`Condition "p_bus < 0 || p_bus >= buses.size()" is true.`** → pasaste `idx = -1` (de `get_bus_index` con nombre mal escrito) a `set_bus_volume_db`. Fix: chequear `!= -1`. Nombres case-sensitive.
+- **`Attempt to call function 'play_stream' in base 'null instance'`** / C# `NullReferenceException` en `GetStreamPlayback` → llamaste `get_stream_playback()` antes de asignar un `AudioStreamPolyphonic` como `stream` y/o antes de `play()`. Fix: asigna stream → `add_child` → `play()` → *después* `get_stream_playback()`.
+- **`play_stream(...)` devuelve `INVALID_ID` silenciosamente** → se alcanzó `polyphony`. Fix: sube `polyphony`.
+- **`'GD' does not contain a definition for 'Linear2Db'`** (C#) → API 3.x. En 4.x usa `Mathf.LinearToDb` / `Mathf.DbToLinear`.
+- **C#: el tween "no hace nada"** → usaste `"VolumeDb"` como property path. El path interno del motor es snake_case: `"volume_db"` (aunque la propiedad C# sea `VolumeDb`).
+- **Impreso `-inf` + audio mudo permanente / `nan`** → `linear_to_db(0.0)`. Fix: floor en -80 o clamp el lineal a `0.0001`.
+- **Sin error, simplemente silencio/reinicio al cambiar de escena** → el player colgaba de la escena liberada. Fix: autoload.
+- **"loop=true en código y el OGG igual se corta"** → el loop de OGG/MP3 vive en `archivo.ogg.import`, NO en el recurso (GH-42671): *"the loop property on AudioStreamOggVorbis is only acknowledged by the editor, and the game uses instead the loop option set when importing"*. Fix: ver siguiente sección.
+- **`finished → queue_free` y los nodos se acumulan** → clip marcado como loop en import nunca termina, nunca emite `finished` (GH-102479). Fix: no loopear SFX one-shot, o no atar `queue_free` a `finished` de un loop.
+- **Audio 3D suena pero "sin dirección / centrado"** → no hay listener. Por defecto la `Camera3D` activa es el listener; si añades un `AudioListener3D` debes llamar `make_current()`.
+- **Web export crash (GH-109728):** pausar el árbol con un player en `playback_type = PLAYBACK_TYPE_SAMPLE` reproduciendo `AudioStreamPlaylist/Interactive/Synchronized` crashea en wasm. Fix: en web usa `PLAYBACK_TYPE_STREAM` para esos streams compuestos.
+
+### Cómo no quedarte atascado
+
+Una IA que no ve el editor se clava sobre todo en metadata invisible (loop de import, listener, fallback de bus). Rutas accionables por CLI/código:
+
+1. **Loop de OGG sin editor:** edita el sidecar `res://music/town.ogg.import`, en `[params]` pon `loop=true` y `loop_offset=0.0` (`loop_offset > 0` puede producir un click/pop al loopear — GH-64775; deja `0.0`). Para WAV: `edit/loop_mode=1` (Forward). Reimporta con `godot --headless --import` (editar el `.import` a mano NO reimporta solo).
+2. **Loop garantizado 100% por código** (ignora el `.import`): `var s := AudioStreamOggVorbis.load_from_file("res://music/town.ogg"); s.loop = true; s.loop_offset = 0.0; player.stream = s`. La instancia cargada así no está atada al pipeline de import.
+3. **Registrar autoload por código** (la IA no puede usar el botón): en `project.godot`, sección `[autoload]`, `MusicManager="*res://autoload/music_manager.gd"`. El `*` = enabled; sin él, stuck silencioso.
+4. **Validación headless:** `godot --headless --import` tras tocar `.import`/bus layout; `godot --headless --check-only --script res://autoload/music_manager.gd` para validar sintaxis GDScript.
+5. **Mono vs estéreo:** un OGG/WAV estéreo en `AudioStreamPlayer3D` no se panea bien; el audio posicional quiere fuentes **mono**.
+6. **Guardas obligatorias:** "misma pista no reinicia" (`if _active.stream == stream and _active.playing: return`), `get_bus_index != -1` antes de usar el índice, piso de -80 dB en fades.
+
+| Síntoma | Sonda por código/CLI | Causa raíz |
+|---|---|---|
+| Slider de música mueve los SFX | `AudioServer.get_bus_index("Music") == -1` | Bus mal escrito → fallback a Master |
+| No se oye nada en 3D | ¿`Camera3D.current` o `AudioListener3D.make_current()`? ¿`unit_size`/`max_distance` sanos? | Sin listener o atenuación mal |
+| Música no loopea pese a loop=true | leer/editar `*.ogg.import`; `godot --headless --import` | Loop vive en import (GH-42671) |
+| Slider en 0 no silencia / volumen raro | ¿`linear_to_db`/`volume_linear`? ¿clamp? | Confundir dB con lineal |
+| C# no compila: Linear2Db | `Mathf.LinearToDb` | API 3.x obsoleta |
+| Nodos de SFX se acumulan / FPS cae | ¿clip loop + `finished→queue_free`? | GH-102479 |
+| Música se reinicia al cambiar sala | ¿player en autoload? ¿guard misma pista? | Player en escena liberada |
+
+### Addon vs construirlo
+
+**Construir con nativo (sin addon)** cubre el 100% del RPG open-source: MusicManager persistente, pool de SFX, ducking, buses, atenuación 3D, zonas por `Area3D`, y música adaptativa (`AudioStreamInteractive/Playlist/Synchronized`, nativas desde 4.3). Solo considera **FMOD** (`github.com/utopia-rise/fmod-gdextension`) o **Wwise** vía GDExtension si tu equipo de audio YA trabaja en esas herramientas — coste: binarios nativos por plataforma, **no funcionan en export web**, complican CI/CLI. Para open-source casi nunca compensa.
+
+**Veredicto ponytail:** el mejor código de audio es el que no escribes. Reusa `AudioStreamPlayer` + buses por nombre + `volume_linear` (o `linear_to_db`), deja que `Area3D` con `audio_bus_override` haga las zonas acústicas y que `AudioStreamPlaylist`/`Synchronized` hagan el crossfade y las capas. El único código propio que un RPG realmente necesita es el autoload `MusicManager` (porque la persistencia entre escenas no es nativa) y, opcionalmente, un pool de SFX. Todo lo demás ya está en el motor: no metas middleware ni reinventes la mezcla.
+
+## 20. Input a fondo: teclado, ratón y gamepad
+
+Godot 4.6 (estable, ~4.6.3, lanzada 2026-01-27). Las APIs de Input son **estables desde 4.0**: nada de lo de aquí es "nuevo en 4.6". Si una IA te dice que `Input.get_vector` o `InputMap` cambiaron en 4.6, está alucinando — lo único que toca 4.6 (`uid://`, Jolt, D3D12, fin de `load_steps`) no afecta a Input salvo al editar `project.godot` a mano (sección 9).
+
+### Enfoque nativo recomendado
+
+Hay **dos capas** y mezclarlas es el error número uno de una IA que no ve el editor:
+
+| Capa | Qué es | Cómo se consulta | Persistencia |
+|---|---|---|---|
+| **Acciones** (`InputMap`) | Nombres lógicos (`"move_forward"`, `"attack"`) mapeados a uno o varios `InputEvent` | Polling: `Input.is_action_pressed("attack")` | **NO se auto-guarda.** Se resetea desde `project.godot` en cada arranque |
+| **Eventos crudos** (`InputEvent`) | Llegan a `_input`/`_unhandled_input`/`_gui_input` | Inspeccionas el `event` por tipo | n/a |
+
+Regla de oro para un RPG: define las acciones en `project.godot`, consulta movimiento con polling en `_physics_process`, captura one-shots en `_unhandled_input`. **Nunca leas teclas crudas (`KEY_W`) en gameplay**: rompe el remapeo y el gamepad. Usa el `InputMap` nativo — no construyas tu propio sistema de acciones.
+
+**Movimiento analógico (lo correcto para sticks):**
+
+```gdscript
+func _physics_process(delta: float) -> void:
+    # get_vector aplica deadzone CIRCULAR y limita la longitud a 1. No sumes ejes a mano.
+    var input: Vector2 = Input.get_vector(
+        &"move_left", &"move_right", &"move_forward", &"move_back", 0.2)
+    var dir: Vector3 = (transform.basis * Vector3(input.x, 0.0, input.y)).normalized()
+    velocity.x = dir.x * SPEED
+    velocity.z = dir.z * SPEED
+    move_and_slide()
+```
+
+Firmas exactas (verificadas en `class_input.html` / `class_inputmap.html`):
+
+```gdscript
+Input.get_vector(neg_x, pos_x, neg_y, pos_y, deadzone := -1.0) -> Vector2  # deadzone circular
+Input.get_axis(neg, pos) -> float                                          # = strength(pos)-strength(neg)
+Input.is_action_just_pressed(action, exact_match := false) -> bool
+Input.get_action_strength(action, exact_match := false) -> float           # 0..1 analógico
+Input.action_release(action) -> void                                       # libera una acción "pegada"
+
+InputMap.add_action(action: StringName, deadzone := 0.5) -> void           # OJO: default 0.5, no 0.2
+InputMap.action_add_event(action, event: InputEvent) -> void
+InputMap.action_erase_events(action) -> void                               # borra TODOS (plural)
+InputMap.action_erase_event(action, event) -> void                         # borra UNO (singular)
+InputMap.action_get_events(action) -> Array[InputEvent]
+InputMap.has_action(action) -> bool
+InputMap.load_from_project_settings() -> void                              # reset a defaults
+```
+
+**One-shots robustos** (atacar, interactuar) van en `_unhandled_input`, **no** con polling:
+
+```gdscript
+func _unhandled_input(event: InputEvent) -> void:
+    if event.is_action_pressed(&"attack"):     # método de InputEvent, NO de Input
+        _do_attack()
+    elif event.is_action_pressed(&"interact"):
+        _interact()
+```
+
+**Detección teclado↔mando** se infiere del tipo del último `InputEvent` (no existe API "dame el último dispositivo"), filtrando el drift del stick. Ver `examples` para el autoload completo.
+
+**Orden de propagación** (canónico, cada fase recorre el árbol en reverse depth-first):
+
+`_input` → `Control._gui_input` → `_unhandled_key_input` → `_unhandled_input`
+
+- `_input`: casi nunca para gameplay. Solo atajos globales (screenshot, pausa que ignora la UI). Recibe TODO **antes** que la UI.
+- `_gui_input`: solo en `Control`, requiere mouse-filter/foco.
+- `_unhandled_input`: gameplay del mundo. No se dispara si la UI ya consumió el evento (un click en menú no ataca).
+
+Cortar la cadena: `get_viewport().set_input_as_handled()`. La doc dice "SceneTree.set_input_as_handled" pero el método real está expuesto en **Viewport**; desde un nodo normal usa `get_viewport().set_input_as_handled()`.
+
+**Vibración y multi-gamepad:**
+
+```gdscript
+for dev: int in Input.get_connected_joypads():           # Array[int] de device ids
+    print(dev, " ", Input.get_joy_name(dev), " guid=", Input.get_joy_guid(dev))
+
+# weak_magnitude, strong_magnitude en 0..1; duration en segundos. duration=0.0 = INFINITO.
+Input.start_joy_vibration(0, 0.4, 0.8, 0.3)
+Input.stop_joy_vibration(0)
+
+Input.joy_connection_changed.connect(func(device: int, connected: bool) -> void:
+    if not connected:
+        get_tree().paused = true)
+```
+
+### Pitfalls y mensajes de error literales
+
+- **`Request for nonexistent InputMap action 'salto'.`** — La acción no existe en `project.godot` ni se añadió en runtime antes del primer polling, o hay un typo (InputMap es **case-sensitive**: `"Attack"` ≠ `"attack"`). Una acción que existe pero **no tiene eventos** devuelve `false` siempre, **sin error** (la peor variante para una IA ciega). Usa constantes `const ATTACK := &"attack"` y `InputMap.has_action()`.
+
+- **`ERROR: InputMap.add_action: Condition "actions.has(p_action)" is true.`** — Llamaste `add_action` sobre una acción ya existente. Guárdalo con `if not InputMap.has_action(...)`.
+
+- **`keycode` vs `physical_keycode` vs `key_label`** (rompe en AZERTY/QWERTZ y la IA NUNCA lo detecta sin ver el teclado): `keycode` = tecla lógica según layout activo; `physical_keycode` = **posición física** mapeada como QWERTY US (lo que quieres para WASD); `key_label` = etiqueta localizada impresa (solo para mostrar). El error: crear WASD con `keycode = KEY_W` y que un tester AZERTY se queje. Fija `physical_keycode = KEY_W` y deja `keycode = 0`.
+
+- **`as_text_key_label()` devuelve el string literal `(Unset)`** al leer un evento del InputMap en `_ready()`, porque los eventos del proyecto se cargan con `key_label = 0`. Para mostrar la tecla bajo el layout del jugador usa `OS.get_keycode_string(DisplayServer.keyboard_get_keycode_from_physical(KEY_W))` o `event.as_text_physical_keycode()`. **Bug a tener presente (GH-110751):** `keyboard_get_keycode_from_physical` **devuelve 0 en macOS** — ten un fallback (`OS.get_keycode_string(physical_keycode)`).
+
+- **`is_action_just_pressed` en `_physics_process` descarta inputs (GH-73339).** `just_pressed` compara con el estado del tick anterior; si la acción se pulsa-y-suelta entre dos ticks, el frame se pierde. Síntoma: "el ataque a veces no sale", "el salto se come inputs a bajo FPS". Fix: one-shots en `_unhandled_input` con `event.is_action_pressed`, no en polling. Y mantén cada one-shot en UN solo sitio (no en `_process` y `_physics_process` a la vez → doble salto).
+
+- **`get_vector` no usa la deadzone que crees.** Con el 5º arg en `-1.0` (default) usa el **promedio** de las deadzones de las 4 acciones. Pásala explícita (`0.2`–`0.3`). Mezclar teclado (1.0 binario) y stick analógico en las mismas acciones puede dar saltos cerca de la deadzone (GH-90515, GH-85124). Acción nueva en runtime: recuerda que `add_action` default es **0.5**, no 0.2.
+
+- **`_gui_input` no recibe nada, sin error en consola.** Es `Control.mouse_filter`. Un `Control` base por defecto es `MOUSE_FILTER_IGNORE`; un overlay/`ColorRect` a pantalla completa con `MOUSE_FILTER_STOP` se come todos los clicks y tu `_unhandled_input` nunca los ve. Pon overlays decorativos en `IGNORE` y setea `mouse_filter` explícito en el nodo que debe recibir.
+
+- **Binding "pegado" tras rebindear (GH-63734).** Tras `action_erase_event`, `is_action_pressed` puede seguir `true` si la tecla estaba físicamente pulsada durante el borrado. Fix: `Input.action_release(action)` tras remapear, o ignora el primer frame.
+
+- **Capturar el rebind sin filtrar `echo`/release/drift.** Mantener pulsada la tecla genera auto-repeat (re-bindea en bucle); el drift del stick (`axis_value ~0.05`) se guarda como binding permanente. Filtra: tecla `pressed and not echo`, `JoypadMotion` solo si `absf(axis_value) > 0.5`.
+
+- **`event.device` NO distingue teclado de mando (GH-7161, GH-100491).** Teclado, ratón y el **primer** joypad **todos son `device == 0`** (en project.godot `-1` = "todos los dispositivos"). Discrimina por **tipo de clase** (`event is InputEventKey`), nunca por `device`. Para local co-op, `is_action_pressed` agrega TODOS los mandos → el jugador 2 mueve al jugador 1; hay que duplicar acciones por jugador o leer `_input` crudo filtrando `event.device`.
+
+- **Prompts de UI parpadean teclado↔mando.** Drift del stick emite `InputEventJoypadMotion` constante. Filtra `absf(axis_value) > 0.2` antes de cambiar de esquema. Decisión de diseño: muchos ignoran `InputEventMouseMotion` (rozar el escritorio con mando en mano no debería cambiar a teclado).
+
+- **`start_joy_vibration` no vibra y NO da error.** El código suele estar bien; el problema es dispositivo/SO (GH-94265 Stadia, GH-88674 macOS, GH-73446 Android, DualShock/DualSense por Bluetooth erráticos — prueba USB; Steam Input intercepta el rumble). Trata la vibración como **best-effort**: slider de intensidad + toggle off, nunca mecánicas que dependan de sentirla. `duration=0.0` = vibra infinito hasta `stop_joy_vibration`.
+
+- **`joy_connection_changed` no es fiable** en algunas combinaciones (XInput + Bluetooth, mando conectado tras arrancar en Windows: GH-112802, GH-102942). Re-escanea `get_connected_joypads()` periódicamente además de confiar en la señal.
+
+- **`is_action_pressed` en script `@tool` spamea `Request for nonexistent InputMap action` en el editor** (GH-76566), porque las acciones runtime no existen en contexto de editor. Guarda con `if not Engine.is_editor_hint():` o evita `@tool` en scripts de gameplay.
+
+- **C# (PascalCase):** `InputMap.ActionAddEvent`, `ActionEraseEvents`, `Input.IsActionPressed`, `Input.GetVector`. `InputMap` es estático en C# (no se instancia). `InvalidCastException` si sacas `cfg.GetValue` sin castear a `Godot.Collections.Array<InputEvent>`. **No hay C# en export Web** (Compatibility, sin .NET): si el RPG apunta a web, el menú de rebind debe ser GDScript.
+
+### Cómo no quedarte atascado
+
+Una IA sin editor no puede ver el InputMap. Desatáscate desde terminal:
+
+```bash
+# Validar sintaxis de un script de input sin abrir el editor:
+godot --headless --check-only --script res://scripts/input_handler.gd
+
+# Arrancar, correr unos frames y volcar logs (verás "Request for nonexistent InputMap action"):
+godot --headless --quit-after 2 --verbose
+
+# Un --script que haga print(InputMap.get_actions()) confirma qué acciones existen de verdad:
+godot --headless --script res://test_input.gd --quit-after 1
+
+# Tras editar project.godot a mano:
+godot --headless --import
+```
+
+Checklist rápido: (1) ¿acción existe? → `print(InputMap.get_actions())` o lee `[input]` en `project.godot`. (2) ¿tiene eventos? → `action_get_events(a).size() > 0`. (3) ¿WASD raro en otro layout? → `physical_keycode`. (4) ¿`get_vector` raro? → deadzone explícita. (5) ¿rebind pegado? → `action_erase_events` (plural) + `Input.action_release`. (6) ¿prompts no cambian? → reacciona al último `InputEvent`, filtra drift. (7) ¿no vibra? → es el dispositivo/SO, itera `get_connected_joypads()`, prueba USB. (8) ¿co-op cruza inputs? → filtra `event.device`.
+
+### Addon vs construirlo
+
+- **Remapeo + persistencia básica:** constrúyelo (ver `examples`). Son ~80 líneas con `ConfigFile` y te dan control total del formato del save, sin depender de un addon que quede abandonado. Es lo que hacen la mayoría de RPGs open-source.
+- **Resource de mapping listo:** [`KoBeWi/Godot-Input-Remap`](https://github.com/KoBeWi/Godot-Input-Remap) (KoBeWi es contribuidor core). Aviso real de su README: *"physical keycodes are not supported"* — limitación para teclados no-QWERTY. Si necesitas `physical_keycode`, el snippet propio sí lo preserva porque serializa el `InputEvent` entero.
+- **Iconos de prompts (Xbox/PS/Switch/teclado):** usa assets gratis (Xelu's Free Controller & Key Prompts) + tu lógica de esquema. No reinventes los sprites.
+- **Mandos exóticos sin mapear** (`get_joy_name` = "Unknown Joystick"): carga [`mdqinc/SDL_GameControllerDB`](https://github.com/mdqinc/SDL_GameControllerDB) con `Input.add_joy_mapping(sdl_string, true)`.
+
+Sobre serialización: guardar `InputEvent` directo en `ConfigFile` funciona (son `Resource`) y es la vía nativa — empieza por ahí. Solo si tu RPG open-source evoluciona mucho y quieres saves diffeables/portables entre refactors, considera serializar a mano (tipo + `physical_keycode`/`button_index`/`axis`+`axis_value` a JSON). No es necesario de entrada.
+
+**Veredicto ponytail:** el `InputMap` + `Input` nativos cubren teclado, ratón y gamepad enteros sin una línea de sistema propio — define acciones en `project.godot`, lee con `get_vector`/`is_action_pressed`, y la única pieza que SÍ debes escribir es ~80 líneas de `ConfigFile` para persistir el remapeo (porque el InputMap no persiste, a propósito). Antes de meter un addon de input, recuerda que esa categoría tiende a quedar sin mantenimiento y que el engine ya te lo da todo. La mejor línea de remapeo es la que no escribes: reusa `var_to_str`/Resources de Godot para serializar, no inventes formato.
+
+## 21. Arranque de proyecto y addons curados
+
+> Contexto verificado (Godot 4.6, released 2026-01-27, mantenimiento ~4.6.x): GDScript 2.0 + C# .NET 8. **Jolt es el solver 3D por defecto en proyectos nuevos.** `.uid` por todas partes desde 4.4; en 4.6 los `.tscn`/`.tres` **ya no escriben `load_steps`** y las referencias externas viven en `uid://`. Renderers: Forward+ / Mobile / Compatibility (web exige Compatibility; **C#/.NET NO exporta a web**). D3D12 es el driver por defecto en Windows en proyectos nuevos.
+
+### El error mental nº1 de una IA que NO ve el editor
+
+El editor de Godot hace cosas **invisibles desde la CLI y el árbol de archivos**, y ahí es donde una IA se atasca. Tres invariantes que debes internalizar antes de cualquier checklist:
+
+1. **`project.godot` a mano no basta.** La carpeta `.godot/` (caché + tabla UID + importados) **no existe hasta el primer arranque que importa**. Una IA que clona un repo y lanza `--export-release` en frío SIEMPRE falla la primera vez.
+2. **Operaciones de UI = escrituras de texto plano a `project.godot`.** Autoloads, plugins habilitados, renderer: todo es editable a mano si sabes la sección y la clave exactas (las doy abajo). No necesitas el editor para esto.
+3. **Las referencias escena↔script viven en `uid://`, no en rutas.** Gitignorar los `.uid` rompe enlaces de forma silenciosa para los colaboradores.
+
+**Cómo desatascarse sin abrir el editor (canónico):**
+
+```bash
+# 1. Importar assets y generar .godot/, *.import, resolver uid:// — en SU PROPIO proceso.
+#    NO combinar import con export en la misma invocación.
+godot --headless --import --path . --verbose
+
+# 2. Validar que un script compila (parse/typecheck, NO ejecuta el juego)
+godot --headless --check-only --script res://autoload/event_bus.gd --path .
+
+# 3. Smoke test: arrancar sin ventana y salir; 0 líneas de error = sano
+godot --headless --path . --quit-after 2 2>&1 | grep -Ei "ERROR|invalid UID|Unable to load"
+```
+
+`--import`, `--check-only`, `--headless`, `--script`/`-s`, `--export-release`, `--export-debug`, `--verbose`, `--quit-after N` son flags **reales** de la CLI 4.6.
+
+### Checklist accionable (orden estricto — el orden importa más que cualquier addon)
+
+```
+[ ] 1. Decide TARGET primero (desktop / web / móvil). Esto fija renderer + lenguaje
+       y es casi irreversible a mitad de proyecto. (web ⇒ Compatibility + GDScript, sin C#)
+[ ] 2. godot --version  → confirma 4.6.x
+[ ] 3. Crea el proyecto con el renderer correcto (§ tabla). En el Project Manager,
+       marca "Version Control Metadata: Git" → genera base .gitignore/.gitattributes.
+[ ] 4. Arráncalo UNA VEZ para generar .godot/ (editor, o headless --import).
+[ ] 5. Corrige .gitignore/.gitattributes (el por defecto NO cubre bien .uid) ANTES del 1er commit.
+[ ] 6. git init → primer commit "scaffold" vacío (para poder revertir un addon que rompa el editor).
+       Si usarás binarios grandes: git lfs install + commitea .gitattributes ANTES de meter binarios.
+[ ] 7. Estructura de carpetas con mkdir (+ .gitkeep). No esperes al editor.
+[ ] 8. Autoloads mínimos en [autoload]: EventBus, GameState/Game, SaveManager (3, no 12).
+[ ] 9. Instala addons UNO A UNO, commit entre cada uno. Solo los que usas HOY.
+[ ] 10. godot --headless --import --path .  (proceso aparte) → genera .uid/.import.
+[ ] 11. Commit incluyendo .uid + .import.
+[ ] 12. CI: cachea .godot/imported/; import en proceso separado del export; nunca --quit-after 1 para reimport.
+```
+
+**Pitfall de orden (LFS):** si metes GLB/audio grandes ANTES de `git lfs track`, quedan en el historial como blobs normales; migrar después requiere `git lfs migrate import --include="*.glb"` (reescribe historia). La doc recomienda **commitear `.gitattributes` antes que el resto**.
+
+### Renderer + lenguaje por target (decisión casi irreversible)
+
+La clave exacta en `project.godot`:
+
+```ini
+[rendering]
+renderer/rendering_method="forward_plus"          ; "mobile" | "gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+```
+
+| Target del RPG | `rendering_method` | C#/.NET | Notas 4.6 |
+|---|---|---|---|
+| Desktop (Win/Linux/Mac) | **`forward_plus`** | Sí | Default recomendado. D3D12 es el driver por defecto en Windows en proyectos nuevos. |
+| Móvil (Android/iOS) | **`mobile`** | Sí | Cambiar de `gl_compatibility` a `mobile` **reduce dispositivos Android soportados** (GH-111729). Glow más rápido en 4.6. |
+| **Web (browser/itch)** | **`gl_compatibility`** | **NO** | Forward+/Mobile no funcionan en web. **C#/.NET no exporta a web** (GH-70796 abierto). |
+
+Regla: un proyecto Forward+ **no exporta a web**. Si quieres demo web, vas **Compatibility + GDScript en todo el proyecto** o renuncias a la web. El atasco invisible: una IA elige `forward_plus`, exporta a web y obtiene pantalla negra / shaders rotos en runtime, no un error de build claro.
+
+**Jolt (proyecto nuevo):** ya viene activo, confirmable en `project.godot`:
+
+```ini
+[physics]
+3d/physics_engine="Jolt Physics"
+```
+
+Los nodos (`RigidBody3D`, `CharacterBody3D`) son los mismos; cambia el backend de `PhysicsServer3D`. No traslades supuestos exactos de Godot Physics (p.ej. comportamiento de `move_and_slide` en bordes) — Jolt es más determinista y a veces más "rígido".
+
+### `.gitignore` / `.gitattributes` — el atasco silencioso que corrompe el repo entero
+
+No da error inmediato: rompe a los clones/colaboradores siguientes. El error de bulto es copiar un `.gitignore` de Godot 3.x o genérico que incluya `*.import` y/o `*.uid`.
+
+- **`*.uid` ignorados** → cada clon regenera UIDs nuevos → **se rompen TODOS los enlaces `uid://` escena↔script**. La escena abre pero las referencias apuntan a IDs que solo existían en la máquina del autor. **Commitea los `.uid`.**
+- **`*.import` ignorados** → cada clon reimporta con defaults; texturas/fuentes pueden desaparecer y los diffs explotan. **Commitea los `.import`.** (El contenido pesado vive en `.godot/imported/`, que SÍ se ignora.)
+- **`.godot/` versionado por error** → conflictos de merge constantes en `uid_cache.bin`, `filesystem_cache`. **Ignora `.godot/`** y arregla el reimport con el ciclo headless, no versionando el caché.
+
+**Regla 4.6 de oro: ignora `.godot/`, commitea `*.import` y `*.uid`.** Ver `examples` para los archivos compile-ready.
+
+**Matiz `export_presets.cfg`:** En 3.x/4.0 guardaba credenciales (keystore passwords) → se ignoraba. Desde **4.1 los secretos se separan en `export_credentials.cfg`**. En 4.6: **versiona `export_presets.cfg`** (presets reproducibles para CI), **ignora `export_credentials.cfg`** y nunca commitees keystores Android (`*.keystore`/`*.jks`) — esos van por variables de entorno / secrets del CI. Si tu equipo aún tiene secretos inline en el preset, mantenlo ignorado hasta limpiarlo.
+
+### Autoloads mínimos (no el "cajón de sastre")
+
+La clave exacta en `project.godot` — **el orden de las líneas = orden de inicialización**:
+
+```ini
+[autoload]
+EventBus="*res://autoload/event_bus.gd"
+GameState="*res://autoload/game_state.gd"
+SaveManager="*res://autoload/save_manager.gd"
+```
+
+El `*` prefijo = habilitado (sin él se registra pero no se carga). Para una IA esto es oro: "subir el botón de Autoload" del foro = **reordenar líneas en este bloque**. No necesitas editor.
+
+Antipatrón clásico: un único `Global.gd` con vida, oro, inventario, diálogo, flags de debug = junk drawer inmantenible. Separa por responsabilidad y comunica por **señales**, no polling. Mínimo viable para un RPG: **3 autoloads, no 12**. Pon `EventBus` (señales puras, cero dependencias) PRIMERO; el resto se comunica vía señales → rompe ciclos.
+
+```gdscript
+# autoload/event_bus.gd — bus de señales global, desacopla sistemas
+extends Node
+
+signal player_died
+signal item_picked(item_id: StringName, amount: int)
+signal scene_change_requested(target: String)
+```
+
+Reglas que causan crashes/deadlocks reales:
+- **NUNCA accedas a otros autoloads en `_init()`** — aún no existen. Usa `_ready()`/`_enter_tree()`. Síntoma: `Cannot call method 'xxx' on a null value` durante el arranque.
+- **NUNCA dependencias circulares** entre managers (GameState↔SaveManager) → deadlock de inicialización.
+- **`class_name` + autoload del MISMO script** → error `Class "X" hides an autoload singleton`. Usa `class_name` para tipos reusables (`Item`, `Stats`) y autoload para servicios; no ambos en el mismo archivo.
+
+### Estructura de carpetas (híbrida: feature-local + type-global)
+
+La doc oficial sugiere organización **por feature/escena** (recursos exclusivos junto a su escena). Para un RPG, la híbrida gana: entidades concretas feature-local, recursos compartidos por tipo. Ver `examples` para el árbol completo.
+
+Convenciones que evitan bugs reales:
+- **snake_case** para archivos/carpetas (excepto scripts C#) → evita el bug de **case-sensitivity**: en Windows/macOS `Player.tscn` y `player.tscn` colisionan; en Linux/CI no. Si una escena referencia `res://Scenes/...` y la carpeta real es `scenes/`, el export en Linux/CI falla con recurso no encontrado.
+- **PascalCase** para nombres de nodo (coincide con built-ins).
+- Datos como `Resource` tipados (`.tres`) en `data/`, separados de la lógica en `systems/`. `@abstract` (desde 4.5) para clases base (`Item`, `State`, `Ability`) evita instanciar la base por error.
+
+### Addon vs construirlo
+
+| Caso | Recomendación |
+|---|---|
+| Cámara 3ª persona simple (follow + offset) | **Construir**: `Camera3D` + `SpringArm3D` nativos. Phantom Camera solo si necesitas blends/framing multi-target. |
+| Inventario trivial (pocos slots, sin stacking) | **Construir** con `Resource` (`class_name Item`) + `Array[Item]`. GLoot si necesitas grid, constraints, stacking, drag&drop serio. |
+| FSM de UN personaje (4-5 estados) | **Construir** un `match state:` o nodos. LimboAI/Beehave cuando hay muchos agentes y árboles reutilizables. |
+| Diálogos lineales cortos | **Construir** con `RichTextLabel` + JSON. Dialogic cuando hay branching, retratos, condiciones, localización. |
+| Save/load | **Construir** (autoload + `FileAccess`/`ResourceSaver` + tus `Resource`). Ningún addon encaja con tu esquema de datos sin pelear; es ~100 líneas auditables. |
+| Testing | **Siempre addon** (GUT/gdUnit4). Nunca escribas tu propio runner. |
+
+Regla: no metas un addon hasta tener un caso de uso real que ya te duele. Cada addon es deuda atada a su soporte de versión de Godot. Para web, evita GDExtension nativo (LimboAI) y C#.
+
+### Lista CURADA de addons 4.6 (repos reales verificados)
+
+Tabla completa con URLs en `examples`. Selección rápida:
+- **Diálogos:** Dialogic 2 (`dialogic-godot/dialogic`). Alternativa más ligera: `nathanhoad/godot_dialogue_manager`. Elige uno.
+- **Cámara:** Phantom Camera (`ramokz/phantom-camera`) — estilo Cinemachine.
+- **IA (BT/FSM):** **LimboAI** (`limbonaut/limboai`, **C++ GDExtension/módulo — necesita binario por plataforma**, soporte 4.6 desde v1.6.0) **vs Beehave** (`bitbrain/beehave`, branch `godot-4.x`, **GDScript puro, sin binario** → mejor para CI/agentes y para web). **No los uses a la vez** (ver pitfall).
+- **Inventario:** GLoot (`peter-kish/gloot`, 4.2+). (El autor es `peter-kish`, NO "peter1745"; Beehave es de `bitbrain`.)
+- **Testing:** GUT (`bitwes/Gut`) si es GDScript puro y quieres mínima fricción; **gdUnit4** si tienes C#/mixto o quieres runner de CI + JUnit XML + GitHub Action oficial.
+
+### Pitfalls y mensajes de error literales
+
+**A) Recurso roto tras clonar / cambiar de versión:**
+```
+ERROR: Cannot get class 'X'.
+res://scenes/foo.tscn:NN - Parse Error: [ext_resource] referenced non-existent resource at: uid://...
+ERROR: Cannot load script "res://...": invalid UID: uid://xxxxx - using text path instead
+```
+Fix: `godot --headless --import --path .` (proceso propio) para regenerar la tabla UID. Si persiste, faltaba commitear `.uid`/`.import`.
+
+**B) El proceso headless se cuelga indefinidamente (no error, no exit):**
+Causa documentada: tras `git clone` git pone el **mismo mtime a todos los archivos** (GH-100465) y el importador se atasca. También cuelga el export en headless sin carpeta `.godot/` (GH-95287).
+Fix: importa en su propio proceso con `--import`; si nunca se abrió, fuerza dos ciclos de tick: `godot --headless --editor --quit-after 2 --path .`. **Nunca `--quit-after 1` para reimport** — aborta a medias (GH-77508). En CI, cachea `.godot/imported/` entre runs.
+
+**C) `load_steps` desaparece en diffs masivos tras abrir en 4.6:**
+Al guardar, 4.6 reescribe el descriptor quitando `load_steps=` → diff en CADA escena con dependencias. Es **esperado** (godot-docs #11707). Higiene: `Project > Tools > Upgrade Project Files`, abre/guarda todo en un commit aislado "migrate to 4.6 tscn format" para no contaminar commits de features. Headless no tiene el menú; equivalente: ciclo `--headless --editor --quit-after 2`.
+
+**D) Plugin no carga tras copiarlo:**
+```
+Unable to load addon script from path: 'res://addons/x/plugin.gd'. This might be due to a code error in that script. Disabling the addon at 'res://addons/x/plugin.cfg' to prevent further errors.
+```
+Causas reales: (1) no habilitado en `[editor_plugins]`; (2) `plugin.cfg` apunta a un `script=` inexistente; (3) **GDExtension/C++ (LimboAI) sin el binario `.so/.dll` de tu plataforma** → el `.gdextension` no carga; (4) plugin C# sin compilar (`dotnet build`, o borra `.godot/mono`); (5) versión incompatible (LimboAI <1.6.0 rompe en 4.6).
+Habilitar headless editando `project.godot`:
+```ini
+[editor_plugins]
+enabled=PackedStringArray("res://addons/phantom_camera/plugin.cfg", "res://addons/dialogic/plugin.cfg")
+```
+Al instalar desde AssetLib, importa **solo el directorio `addons/<x>/`** y nada más.
+
+**E) LimboAI + Beehave juntos = colisión de clases:** ambos registran su propia clase `Blackboard` → error de `class_name` duplicado al cargar (limboai#72, beehave#322). **Elige uno.**
+
+**F) Shader heredado de pre-4 que no compila:**
+```
+Use of reserved keyword: 'SCREEN_TEXTURE'   (o: Use of undeclared identifier 'SCREEN_TEXTURE')
+```
+Fix 4.x: built-ins `SCREEN_TEXTURE`/`DEPTH_TEXTURE` eliminados → uniforms con hint:
+```glsl
+uniform sampler2D screen_tex : hint_screen_texture;
+uniform sampler2D depth_tex  : hint_depth_texture;
+```
+
+**G) AnimationPlayer en 4.6 (GH-110767):** las **propiedades de nombre de animación** (`current_animation`, `assigned_animation`, `autoplay`, señal `current_animation_changed(name: StringName)`, `get_queue() -> StringName[]`) pasaron de `String` a `StringName`. **NO afecta nombres de track.** Asignar `anim.assigned_animation = "walk"` auto-castea, pero comparaciones estrictas `==` con tipos mezclados o serialización antigua fallan, con `Animation not found: 'animation_name'`. Fix: usa literales `&"walk"` (StringName) al asignar/comparar estas props.
+
+**H) C#/.NET a web no soportado (GH-70796):** el preset falla o el `.wasm` no embebe el runtime .NET. Fix: para web usa Compatibility + **GDScript**.
+
+### Cómo no quedarte atascado
+
+Comandos que una IA SÍ puede correr sin ver el editor:
+
+```bash
+# Validar sintaxis GDScript 2.0 de un script concreto
+godot --headless --check-only --script res://autoload/event_bus.gd --path .
+
+# Confirmar que .uid/.import están trackeados (deben devolver resultados)
+git ls-files '*.uid' '*.import'
+
+# Confirmar que .godot/ está ignorado y *.uid / *.import NO
+git status --ignored
+
+# Salud general: 0 líneas de salida = sano
+godot --headless --path . --quit-after 2 2>&1 | grep -Ei "ERROR|invalid UID|Unable to load"
+```
+
+Nunca asumas que `árbol de archivos == estado del editor`. Tras tocar cualquier cosa a ciegas: `--import` (proceso propio) + `--check-only`.
+
+**Veredicto ponytail:** el mejor addon es el que no instalas. Decide target/renderer/lenguaje primero (irreversible), escribe `.gitignore`/`.gitattributes` correctos antes del primer commit (commitea `.uid` y `.import`, ignora `.godot/`), y monta solo 3 autoloads (`EventBus`, `GameState`, `SaveManager`) comunicados por señales. Para cámara, inventario simple, FSM de un personaje y save/load: nodos nativos + `Resource`. Reserva addons (Dialogic, Phantom Camera, LimboAI/Beehave, GLoot, GUT/gdUnit4) para cuando el dolor sea real, e instálalos uno a uno con commit entre cada uno. Y recuerda el invariante que tumba a las IAs headless: `.godot/` no existe hasta el primer import — importa en proceso propio antes de exportar, nunca con `--quit-after 1`.
+
+## 22. Localización (i18n)
+
+Localizar un RPG 3D en Godot 4.6 es, en el 90% de los casos, un problema de **pipeline y fuentes**, no de API. Una IA que no ve el editor se atasca porque `tr()` "no traduce" y empieza a tocar código, cuando casi siempre la causa es que la traducción no está registrada, el `.csv` no se reimportó, el locale de test está vacío, o faltan glyphs (que ni siquiera es i18n). La señal diagnóstica que hay que internalizar:
+
+> **¿`tr()` devuelve la CLAVE o devuelve CUADRITOS (□□□)?**
+> Clave → problema de carga/locale/registro. Cuadritos → problema de fuente (fallback de glyphs). Son fallos distintos con fixes distintos.
+
+### Modelo mental
+
+Godot **no traduce strings: traduce claves** vía `TranslationServer`. Flujo real:
+
+1. Escribes **claves** (`START_GAME`, no la frase) en código/escena.
+2. `tr("START_GAME")` consulta `TranslationServer` con el locale actual.
+3. `TranslationServer` busca en los `*.translation` (binarios) cargados para ese locale.
+4. Si no hay match → `tr()` **devuelve la clave tal cual, sin error**. Este silencio es el atasco número uno.
+
+Tres formas de obtener texto traducido:
+- `tr()` / `tr_n()` (GDScript), `Tr()` / `TrN()` (C#).
+- **auto-translate**: cualquier `Control`/`Window` con texto traduce su propiedad `text`/`title` según `auto_translate_mode`.
+- **POT/CSV scanner**: extrae strings de `tr()` y de propiedades de texto de nodos para generar el catálogo.
+
+### Enfoque nativo recomendado
+
+El pipeline CSV/PO + `TranslationServer` + auto-translate es **nativo y suficiente** para un RPG; no necesitas addon para el runtime. La decisión de fondo es la fuente de strings:
+
+- **gettext (PO/POT) — recomendado para un RPG con mucho texto y/o traductores comunitarios.** Un archivo por locale (diffs limpios en Git), soporta `msgctxt` (contexto), `msgid_plural` (plurales reales por idioma con N formas), y comentarios para traductores. Herramientas maduras: Poedit, Lokalize, Weblate (selfhosted, patrón estándar en open-source).
+- **CSV — solo para proyectos pequeños o equipos que editan en Sheets.** Genera conflictos de merge feos y el escapado de comas/saltos rompe el parseo.
+
+Pipeline canónico:
+
+1. **Nunca hardcodear** texto visible. Claves en `MAYÚSCULAS_CON_GUION` para distinguirlas de frases (no hay restricción técnica, es convención anti-ambigüedad).
+2. Fuente: CSV **o** PO/POT bajo `res://`.
+3. Godot **importa automáticamente** y genera `*.translation` binarios en `.godot/imported/`.
+4. Registrar esos `.translation` en **Project Settings > Localization > Translations** (persiste en `project.godot` como `locale/translations`).
+5. Runtime: `TranslationServer.set_locale(locale)`.
+
+#### APIs exactas (4.6)
+
+`Object`:
+- `tr(message: StringName, context: StringName = "") -> String`
+- `tr_n(message: StringName, plural_message: StringName, n: int, context: StringName = "") -> String`
+
+`TranslationServer` (singleton global):
+- `set_locale(locale: String)` / `get_locale() -> String`
+- `translate(message, context = "") -> StringName`
+- `translate_plural(message, plural_message, n, context = "") -> StringName`
+- `get_loaded_locales() -> PackedStringArray`
+- `set_pseudolocalization_enabled(enabled: bool)` (QA: detecta strings sin traducir y overflow de UI)
+- `compare_locales(a, b) -> int`, `standardize_locale(locale) -> String`
+
+`Node` (auto-translate, ya unificado en la línea 4.x): propiedad `auto_translate_mode` con enum `AutoTranslateMode`:
+- `AUTO_TRANSLATE_MODE_INHERIT` (default — hereda; la raíz equivale a ALWAYS)
+- `AUTO_TRANSLATE_MODE_ALWAYS`
+- `AUTO_TRANSLATE_MODE_DISABLED`
+
+La antigua `Control.auto_translate` (bool) está **deprecada** — usa `auto_translate_mode`. Esto es exactamente donde la training data y los tutoriales viejos dan API obsoleta.
+
+`OS.get_locale()` (p.ej. `"es_ES"`) / `OS.get_locale_language()` (solo `"es"`) para detectar el idioma del sistema al arrancar.
+
+#### CSV (UTF-8, sin BOM)
+
+```csv
+keys,en,es,ja,?context,?plural
+START_GAME,Start Game,Iniciar partida,ゲーム開始,,
+MENU_OPEN,Open,Abrir,開く,verb,
+GREET_PLAYER,"Hello, {0}!","¡Hola, {0}!","こんにちは、{0}！",,
+```
+
+Reglas que rompen a la gente:
+- La primera columna **debe** llamarse `keys`. Las demás cabeceras son **códigos de locale válidos** (`en`, `es`, `ja`, `pt_BR`…), no nombres descriptivos. Un header como `comment` se interpreta como locale inválido y genera un `.translation` basura.
+- **UTF-8 sin BOM**. Con BOM, la primera clave queda como `﻿keys` y toda la columna de claves se inutiliza (todo devuelve la clave). Mojibake (`Ã©`, `æ–‡å­—`) = encoding mal.
+- Comas/saltos dentro de celda → entrecomillar con `"`; comilla interna se escapa duplicándola (`""`).
+- Delimitador puede ser coma, `;` o tab (`ResourceImporterCSVTranslation`). Excel-ES suele guardar `;` + BOM: revisa ambos.
+- **No dejes celdas vacías**: el comportamiento de "vacío" difiere entre CSV y PO (en PO `msgstr ""` devuelve la clave). Repite el texto fuente explícitamente.
+- `?context` y `?plural` son columnas especiales de 4.6 (PR #101471); solo se respeta la **primera** de cada una. Ver veredicto de plurales abajo.
+
+#### gettext (PO/POT)
+
+`Project Settings > Localization > POT Generation` → añadir escenas/scripts a escanear → **Generate POT** (botón en el editor). Traducir el `.pot` en Poedit → `es.po`, `ja.po` → añadir los `.po` en **Translations** (Godot los compila a `.translation`).
+
+```po
+msgid "%d enemy"
+msgid_plural "%d enemies"
+msgstr[0] "%d враг"
+msgstr[1] "%d врага"
+msgstr[2] "%d врагов"
+```
+Header crítico (CLDR por idioma):
+```po
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : 2);\n"
+```
+**El número de `msgstr[N]` DEBE coincidir con `nplurals`** del header, o el plural sale mal/falla. Valida antes de importar: `msgfmt -c es.po -o /dev/null` (si no imprime nada, está bien).
+
+#### Runtime y cambio de idioma (el patrón que sí funciona)
+
+`set_locale()` re-traduce automáticamente los `Control`/`Window` con auto-translate activo (reciben `NOTIFICATION_TRANSLATION_CHANGED`). **Pero el texto que asignaste por código con `tr()` ya es un String resuelto — NO se re-traduce solo.** Hay que re-asignarlo:
+
+```gdscript
+func set_language(loc: String) -> void:
+    TranslationServer.set_locale(loc)   # "es", "ja", "en_US"...
+    _refresh_texts()                     # re-aplica lo seteado por código
+
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_TRANSLATION_CHANGED:
+        _refresh_texts()
+```
+Persiste el locale en `user://settings.cfg` y aplícalo en un autoload `_ready()` **antes** de mostrar la UI.
+
+### Pitfalls y mensajes de error literales
+
+- **`tr("START_GAME")` muestra `START_GAME` literal (sin error en consola).** Causas, por probabilidad: (a) el `.translation` no está en `locale/translations`; (b) el `.csv`/`.po` no se reimportó (`godot --headless --import`); (c) **Localization > Locale > Test** vacío y sin `set_locale()` (GH-80985); (d) locale no coincide (registraste `es_ES` pero pides `es` — el fallback `xx_YY`→`xx` puede fallar, GH-90677; usa locales sin región salvo necesidad); (e) la clave contiene `\n` (GH-47883 — usa claves planas).
+- **Texto sale como `□□□` (tofu) o invisible en CJK/árabe.** NO es i18n: la fuente no tiene esos glyphs. Fix en §fuentes.
+- **`Error parsing CSV` / primera clave corrupta / mojibake.** CSV no es UTF-8 o tiene BOM. Re-guardar UTF-8 sin BOM.
+- **`tr_n` da forma plural incorrecta o falla.** `nplurals` del header ≠ número de `msgstr[]`. Valida con `msgfmt -c`.
+- **`ERROR: Cannot open file '...'` cargando recursos remapeados/fuentes en export** con "Convert Text Resources To Binary On Export" activado (GH-63606). Revisar remaps o desactivar esa opción.
+- **Cambié locale y la UI no cambia.** Los labels seteados por código no se re-traducen solos: re-aplica en `NOTIFICATION_TRANSLATION_CHANGED`.
+- **El nombre del héroe "Cloud" se traduce a "Nube".** auto-translate está ON por defecto y cualquier `text` que coincida con una clave se traduce. Pon `AUTO_TRANSLATE_MODE_DISABLED` en ese Label. Ojo bug GH-95357: `DISABLED` no se hereda más allá del primer hijo → ponlo **directamente** en el nodo problemático, no en un ancestro.
+- **El POT tiene claves espurias que no pusiste.** Nodos en modo `Inherit` se cuelan como `msgid` (GH-108744).
+- **`LineEdit.placeholder_text` no respeta el locale** (GH-23984): asignar con `tr()` en `_ready()` y re-aplicar al cambiar locale.
+- **No hay formateo de números/fechas por locale** (no hay ICU/`Intl`; `TextServer.format_number()` solo mapea dígitos a glyphs alternativos, no cambia `1,000.5` ↔ `1.000,5`; proposals GH-12429, GH-28660 abiertas). Formatea a mano por locale o mete el formato como string traducible. Fechas: `Time.get_datetime_dict_*` + plantilla por idioma; los nombres de mes/día localízalos como claves.
+
+#### Fuentes y glyphs (el pitfall visual que una IA ciega no detecta)
+
+El texto japonés/coreano/árabe sale como `□□□` porque la fuente primaria no tiene esos glyphs. Fixes:
+- En **desktop/móvil** Godot usa fuentes del SO como fallback automático (`SystemFont`) → CJK/emoji suelen resolverse solos. En **export web NO se cargan system fonts** → debes empaquetar la fuente.
+- Añade **fallbacks Noto** al `FontFile`/`Theme`/`LabelSettings`: `Noto Sans JP`, `Noto Sans SC`, `Noto Sans KR`, `Noto Sans Arabic`. Una sola fuente con cadena de fallbacks que cubra todos los idiomas.
+- **NO remapees fuentes por locale**: cambiar de idioma en runtime rompe la fuente remapeada (GH-80130). Usa fuente única + fallbacks.
+- **MSDF + CJK = problemas**: atlas gigante y bug de "cajas grises" en `Label3D` (GH-100726). Para diálogos 3D usa DynamicFont (TTF/OTF) que rasteriza on-demand.
+- Árabe/devanagari requiere **TextServer Advanced** (build por defecto lo trae; builds minimal/web pueden no traerlo → shaping roto, letras inconexas).
+
+### Cómo no quedarte atascado (headless / sin editor)
+
+Pasos que **solo existen en la GUI** pero persisten en `project.godot` editable:
+
+```ini
+[internationalization]
+locale/translations=PackedStringArray("res://i18n/game.es.translation", "res://i18n/game.ja.translation")
+locale/test="es"
+locale/translations_pot_files=PackedStringArray("res://main.gd", "res://ui/menu.tscn")
+```
+
+- **Regenerar `.translation` sin editor:** `godot --headless --import --path /ruta/proyecto` (genera los binarios en `.godot/imported/` a partir de CSV/PO). Sin esto el `.translation` referenciado no existe.
+- **Registrar traducciones sin GUI:** editar `locale/translations` y `locale/test` en `project.godot` a mano. Usa **rutas `res://` explícitas, no UID**, para robustez en CI.
+- **Verificar el pipeline:** un `--script` que cargue y haga `TranslationServer.set_locale("es"); print(tr("START_GAME"))`:
+  ```
+  godot --headless --quit-after 1 --script res://tools/i18n_check.gd --verbose
+  ```
+- **Trampa de orden:** editar el CSV NO basta. Hay tres pasos: (1) `--import` regenera `.translation`; (2) registrar en `project.godot`; (3) `locale/test` o `set_locale`. Saltarse cualquiera → clave cruda.
+- **POT por CLI NO EXISTE** (GH-10986: ningún flag, ninguna API GDScript). Una IA que intente `godot --headless --generate-pot` fracasa. En CI: usa flujo **CSV + `--import`**, o genera/compila PO con **gettext externo** (`xgettext` para extraer, `msgfmt es.po -o es.mo` para compilar) y versiona el catálogo en Git.
+- **`.uid` / Upgrade Project Files:** desde 4.4 los recursos usan `uid://` + ficheros `.uid` y 4.6 ya no escribe `load_steps` en `.tscn`. Si editas rutas a mano y rompes los `.uid`, los `.translation` referenciados por UID no cargan → `godot --headless --import` o **Project > Tools > Upgrade Project Files**.
+
+#### C# — avisos de plataforma
+
+- Firmas: `Tr(message, context)`, `TrN(message, pluralMessage, n, context)`, `TranslationServer.SetLocale(...)`. `Tr()` == `tr()`.
+- **C# NO corre en export web** (renderer Compatibility, sin .NET). Si el RPG apunta a web, la capa de i18n debe ser GDScript.
+- Extracción de strings C# en el POT scanner: el dossier de docs afirma que 4.6 ya extrae `Tr`/`TrN`; el veterano sostiene que seguía sin extraerse a junio 2026. **No confíes en ello**: mantén las claves usadas en C# también referenciadas en una escena escaneable, o añade esos `msgid` al `.pot` a mano.
+
+### Addon vs construirlo
+
+- **Construir (por defecto):** el pipeline nativo (CSV/PO, `tr`/`tr_n`, `TranslationServer`, auto-translate, pseudolocalization) es suficiente. No necesitas addon para el runtime.
+- **Edición de catálogo:** *Godot4LocalizationEditor* (`VP-GAMES`, asset #1199) o *Localization Editor* (asset #1555) dan una tabla GUI; útiles para autoría manual, inútiles para flujo headless (son GUI).
+- **CSV↔gettext:** `Wiechciu/csv-to-gettext-converter` si autoras en Sheets pero entregas PO a traductores en Git.
+- **Traductores:** Weblate (selfhosted) o Poedit/Lokalize. Para open-source comunitario, Weblate + PO es el estándar.
+- **Evita** soluciones que reimplementan su `TranslationServer` o cargan JSON propio en runtime: pierdes auto-translate de nodos y el scanner de catálogo.
+- Ningún addon resuelve el gap de POT-por-CLI; es del engine (GH-10986).
+
+**Veredicto ponytail:** no escribas tu propio sistema de traducción. Usa claves + `tr()`/`tr_n()` + `TranslationServer` y deja que el auto-translate de los nodos `Control` haga el trabajo gratis; tú solo re-aplicas en `NOTIFICATION_TRANSLATION_CHANGED` los textos que seteaste por código. Para un RPG serio elige **PO/gettext** (plurales reales, contexto, Git, Weblate); el CSV es la opción rápida pero sus columnas `?context`/`?plural` de 4.6 son nuevas y poco probadas, así que para plurales robustos sigue siendo más seguro PO. El 90% de tu esfuerzo anti-stuck no está en la API sino en tres cosas: reimportar (`--import`), registrar en `project.godot`, y empaquetar fuentes con fallbacks Noto. Lo que NO existe (formateo de números/fechas por locale, POT por CLI) no lo busques: hazlo con gettext externo o a mano.
+
+## 23. Multiplayer y co-op
+
+Godot 4.6 trae el stack *high-level multiplayer* sin cambios de firma respecto a 4.3/4.4/4.5 (no hubo refactor de red), así que las páginas `/en/stable/` y `/en/4.6/` son canónicas. El reto real para una IA que **no ve el editor** es que ~70% del setup multiplayer vive en el inspector (replication config, spawn path, lista de escenas spawneables) y **falla en silencio** si lo dejas vacío. Toda esta sección prioriza construir esa configuración **por código**, que es lo que una IA ciega sí puede hacer de forma reproducible.
+
+### Enfoque nativo recomendado
+
+Cuatro piezas, y mezclarlas es el bug #1:
+
+| Pieza | Clase | Rol mental |
+|---|---|---|
+| Transporte | `ENetMultiplayerPeer` | "el cable" (UDP fiable/no-fiable) |
+| API | `MultiplayerAPI` / `SceneMultiplayer` (default) | enruta RPCs, emite señales de conexión |
+| Spawn | `MultiplayerSpawner` | **qué nodos existen** (authority -> peers) |
+| Sync | `MultiplayerSynchronizer` + `SceneReplicationConfig` | **qué valores tienen** esos nodos |
+| Eventos | `@rpc` / `[Rpc]` | eventos puntuales (golpe, abrir cofre, chat) |
+
+Regla: **Spawner = qué nodos; Synchronizer = qué valores; RPC = eventos.** No muevas al jugador cada frame por RPC — eso es Synchronizer. Nunca cubras la **misma** propiedad por RPC *y* Synchronizer a la vez (conflicto de escritura).
+
+Arquitectura para un RPG co-op (las 3 lentes coinciden): **listen-server / server-authoritative ligero**. Uno hostea (server + jugador, peer id `1`), el resto son clientes. El cliente envía *intención* (input) por `@rpc("any_peer")`; el server valida y empuja el estado (posición/hp) por Synchronizer. P2P puro (cada peer autoridad de su propio personaje, sin árbitro de mundo) sirve para co-op casual entre amigos, pero pierdes árbitro de enemigos/loot/economía. Para un RPG con enemigos: **server autoritario del mundo, peer-authority solo del movimiento de su jugador** (vía un nodo `Input` hijo).
+
+**Patrón de autoridad determinista (clave anti-desync).** El engine empareja nodos remotos por `path + name + authority`. Si dejas que Godot auto-nombre (`@Player@2`), los nombres divergen entre peers y el sync apunta a fantasmas. Solución universal: el **nombre del nodo ES el peer id**, y la autoridad se deriva localmente — nunca se anuncia por RPC asíncrono.
+
+```gdscript
+func _enter_tree() -> void:
+    set_multiplayer_authority(name.to_int())  # determinista, idéntico en todos los peers
+```
+
+Asigna autoridad en `_enter_tree()` o dentro de `spawn_function`, **nunca en `_ready()`** (rompe el sync, ver pitfalls). Pero ojo: en `_enter_tree` el peer aún puede no estar configurado, así que pasa el `peer_id` como **dato del spawn**, no lo leas del entorno.
+
+**Construir el `SceneReplicationConfig` por código** (lo que evita el atasco del inspector). El `NodePath` es `"NodoRelativo:propiedad"` — `".:position"`, no `"position"` a secas, o no sincroniza y no avisa:
+
+```gdscript
+func _setup_sync() -> void:
+    var cfg := SceneReplicationConfig.new()
+    var np := NodePath(".:sync_position")  # ver interpolación abajo
+    cfg.add_property(np)
+    cfg.property_set_spawn(np, true)       # incluida en el spawn inicial
+    cfg.property_set_replication_mode(np, SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
+    var hp := NodePath(".:health")
+    cfg.add_property(hp)
+    cfg.property_set_replication_mode(hp, SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+    $MultiplayerSynchronizer.replication_config = cfg
+    $MultiplayerSynchronizer.replication_interval = 0.05  # 20 Hz; 0.0 = cada frame (caro)
+```
+
+Modos: `REPLICATION_MODE_ALWAYS` (cada `replication_interval`), `REPLICATION_MODE_ON_CHANGE` (cada `delta_interval`, solo al cambiar), `REPLICATION_MODE_NEVER`. Construir el config por código además **esquiva** el bug del editor donde editar el config de una escena instanciada no se guarda (GH-84793) y la limitación de que añadir/quitar propiedades por código sobre un config existente no siempre re-arma la sync (GH-65725) — por eso se crea un config nuevo entero.
+
+**Spawn 100% por código con `spawn_function`** (no requiere poblar la lista `_spawnable_scenes` del inspector):
+
+```gdscript
+@onready var spawner: MultiplayerSpawner = $MultiplayerSpawner
+
+func _ready() -> void:
+    spawner.spawn_path = ^"../Players"      # anchor explícito; mismo nodo en todos los peers
+    spawner.spawn_function = _spawn_player
+
+func _on_peer_connected(id: int) -> void:
+    if multiplayer.is_server():             # SOLO el server spawnea
+        spawner.spawn(id)                    # 'id' viaja como 'data' a TODOS los peers
+
+func _spawn_player(data: int) -> Node:       # corre en CADA peer
+    var p := preload("res://player.tscn").instantiate()
+    p.name = str(data)                       # nombre determinista -> autoridad en _enter_tree
+    return p                                  # NO hagas add_child: el spawner lo añade
+```
+
+Regla de oro de `spawn_function`: el Node devuelto **NO debe estar ya en el árbol** (Godot lo añade bajo `spawn_path`). Si haces `add_child` tú -> doble-parent/duplicados.
+
+**Separación input/estado** (server-authoritative real): el personaje es autoridad del server; un nodo hijo `InputSynchronizer` es autoridad del cliente. El cliente escribe input ahí, su Synchronizer lo manda al server, el server lo procesa y replica la posición resultante.
+
+```gdscript
+# InputSynchronizer.gd — autoridad = cliente dueño
+extends MultiplayerSynchronizer
+@export var move_dir := Vector2.ZERO
+
+func _process(_delta: float) -> void:
+    if is_multiplayer_authority():
+        move_dir = Input.get_vector("left", "right", "up", "down")
+```
+
+**Seguridad:** toda `@rpc("any_peer")` es superficie de ataque. Siempre `var sender := multiplayer.get_remote_sender_id()` y valida que `sender` posee la acción (ownership, vivo, en rango). `get_remote_sender_id()` lo da el engine (no spoofeable desde cliente vanilla) — confía en el id, **nunca** en los argumentos. Para juego serio: `SceneMultiplayer.auth_callback` para autenticar peers. **Nunca** `allow_object_decoding = true` con datos no confiables (es RCE: ejecuta código deserializado).
+
+### Pitfalls y mensajes de error literales
+
+- **`RPC '...' is not allowed on node ... Mode is 'Authority', authority is '<id>'.`** / `Unable to get RPC config for the function "..."` (GH-66224): el método no tiene `@rpc`/`[Rpc]`, la anotación difiere entre peers, o un no-authority llamó una RPC `"authority"`. La config `@rpc` debe ser **idéntica** en el script que ambos peers cargan.
+- **RPC silencioso dentro de señales del *peer*** (GH-68750): no puedes lanzar RPC dentro del handler `peer_connected` del `MultiplayerPeer`. Conéctate a `multiplayer.peer_connected` (señal de la **API**), no a `peer.peer_connected`. Síntoma: id válido en log, RPC descartado sin error.
+- **`Node not found` / `Failed to get cached path` / `get_cached_object: ID not found in cache of peer.`** (GH-76894, GH-78692): nombres no deterministas (fix: `name = str(peer_id)`), o el `spawn_path`/`MultiplayerSpawner` no existe con path idéntico en el cliente (fix: carga la **misma** escena raíz en host y cliente; espera a que ambos tengan el árbol antes de RPC al nodo recién spawneado).
+- **`The MultiplayerSynchronizer ... is unable to process the pending spawn since it has no network ID.`** (GH-75067): cambiaste autoridad en `_ready()`. Fix: hazlo en `_enter_tree()` o en `spawn_function`.
+- **`Trying to call an RPC via a multiplayer peer which is not connected.`**: RPC antes de `connected_to_server`. Fix: espera la señal, o comprueba `multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED`.
+- **RPC "no hace nada" en el emisor** (GH-98588): falta `"call_local"`.
+- **`@rpc` en método de no-Node** (GH-89981): solo funciona en métodos de clases derivadas de `Node`.
+- **Spawns dobles:** la IA pone `_add_player()` en ambos lados. Hay que gatear con `if multiplayer.is_server():`, y el host debe llamar `_add_player(1)` manualmente porque `peer_connected` NO dispara para el id propio.
+- **El orden de los nodos `MultiplayerSynchronizer` en el árbol importa** (GH-75884): si el sync de input va antes que el de posición, el primer frame puede fallar. Prefiere un único synchronizer por nodo lógico.
+- **C# default de `TransferMode` = `Reliable`; GDScript default = `unreliable`** (GH-docs#8874, verificado). No asumas paridad. En C# se invoca con `Rpc(MethodName.Foo, args)` / `RpcId(1, MethodName.Foo, args)` usando el `StringName` **generado** `MethodName.X`, **no** un literal ni `.rpc()`. El bug `Nonexisting function 'rpc' in base 'Callable'` (GH-84149) viene de portar la sintaxis GDScript a C#.
+- **`rpc_id(0, ...)`**: `0` = broadcast a todos menos a ti. Para hablar **solo** con el server usa `rpc_id(1, ...)`.
+- **Stuttering / teletransporte:** el Synchronizer **sobreescribe** `position` con el valor crudo y **no interpola** nativamente (proposal GH-7280). Fix: no sincronices `position`; sincroniza una variable espejo y lerpea hacia ella en el no-autoritario:
+  ```gdscript
+  @export var sync_position: Vector3  # ESTA va en el replication_config
+  func _physics_process(delta: float) -> void:
+      if is_multiplayer_authority():
+          sync_position = global_position
+      else:
+          global_position = global_position.lerp(sync_position, 1.0 - exp(-15.0 * delta))
+  ```
+
+### Cómo no quedarte atascado
+
+Sin editor, el flujo de validación es por CLI (todos los flags verificados en los FACTS 4.6):
+
+- `godot --headless --check-only --script res://net/server.gd` — chequeo de sintaxis.
+- `godot --headless --import` — regenera recursos/UIDs tras editar `.tscn` a mano. **4.6 ya no escribe `load_steps`**; los recursos usan `uid://` + ficheros `.uid` (desde 4.4). Tras editar `.tscn` manualmente, corre **Project > Tools > Upgrade Project Files** o `--import`.
+- `godot --headless --quit-after 600 --verbose` — corre N frames con log de red verboso: los descartes de RPC, `Mismatching configuration` y `Node not found` aparecen aquí.
+- Dos instancias para probar: parsea args tras `--` (`if "--server" in OS.get_cmdline_user_args()`).
+- **Dedicated server:** el export "dedicated server" fuerza `--headless` y setea el feature tag `dedicated_server` -> `if OS.has_feature("dedicated_server"):` arranca como server. Export: `godot --headless --export-release "Linux Server" build/server.x86_64`.
+- **Debug ciego obligatorio:** loguea `multiplayer.get_unique_id()`, `get_multiplayer_authority()`, `is_multiplayer_authority()` en `_ready` de cada peer, y `get_remote_sender_id()` dentro de cada RPC `any_peer` — es tu única ventana sin GUI.
+- **Web/navegador:** ENet (UDP) **no** funciona; usa `WebSocketMultiplayerPeer` o `WebRTCMultiplayerPeer` (ambos nativos). **C# no corre en web** (renderer Compatibility, sin .NET) — si el target es navegador, usa GDScript y detéctalo antes de escribir nada.
+
+**Qué NO sincronizar (lista negra):** nodos cosméticos (partículas, audio one-shot, animación de UI -> dispáralos por RPC `unreliable`); valores derivables (calcula `health_bar` desde `hp` local); RNG/loot (el **server** tira el dado y replica el resultado, o sincroniza la semilla — `randi()` por cliente = mundos divergentes); inventario completo cada tick (RPC `reliable` solo al dueño al cambiar); `velocity` + `position` a la vez si el cliente corre física (fight de integración). Posición = `unreliable_ordered`; eventos = `reliable`. Para mapas grandes: `public_visibility = false` + `set_visibility_for(peer_id, true)` (interest management; ahorra banda y previene wallhacks — pero solo lo respeta el peer **con autoridad** sobre el synchronizer, por eso enemigos deben ser autoritarios del server).
+
+### Addon vs construirlo
+
+- **Co-op casero / LAN / pocos jugadores: CONSTRUIR** con el stack nativo (ENet + Spawner + Synchronizer + `@rpc`). Suficiente, sin dependencias.
+- **Predicción/rollback/reconciliación serias: [netfox](https://github.com/foxssake/netfox)** — addon open-source activo (2026), construye *sobre* la API nativa, no la reemplaza. Para un co-op PvE **no hace falta**; la interpolación casera del lerp basta.
+- **Rollback determinista lockstep (fighting): godot-rollback-netcode (Snopek)** — overkill y mal ajuste para RPG (asume P2P + simulación determinista total).
+- **Steam/lobbies/NAT-punch:** **GodotSteam** (ecosistema principal). El veterano alertó que el repo `GodotSteam/MultiplayerPeer` quedó archivado (2025-11) y `expressobits/steam-multiplayer-peer` pausado — trátalo como **señal de no empezar dependencia nueva ahí**, pero la fecha exacta no la pude reverificar; confirma el estado del repo antes de adoptarlo.
+
+**Cuándo NO meter multiplayer (YAGNI):** si el RPG es single-player con "co-op algún día", **no** arquitectures todo server-authoritative ya. El multiplayer triplica la superficie de bugs (autoridad, spawn determinista, desync, debug ciego). Mete red cuando el loop core SP sea divertido y estable; pero diseña los sistemas (inventario, combate) como "comando -> aplicar estado" desde el día 1 para abaratar el retrofit.
+
+**Veredicto ponytail:** No escribas netcode — orquesta nodos. `MultiplayerSpawner` + `MultiplayerSynchronizer` + `@rpc` cubren el 100% de un RPG co-op sin una línea de transporte custom. El único código que *sí* escribes a mano es lo que el editor te ocultaría a ti, la IA ciega: construir el `SceneReplicationConfig` por código, derivar autoridad del nombre del nodo, y el lerp de interpolación. Todo lo demás —rollback, predicción, sockets Steam— es addon (netfox/GodotSteam) que se enchufa al mismo stack, o es YAGNI hasta que el single-player esté content-complete.
+
+## 24. @tool, EditorPlugin y generación procedural
+
+Los tres lentes coinciden en lo esencial, y esa coincidencia define la verdad operativa: el dolor con `@tool` casi nunca es de API, es que **tu código corre dentro del proceso del editor, un mundo que la IA no observa**, y sus efectos secundarios (nodos huérfanos, recursos sin persistir, `.tscn` corrupto, freeze del editor) ocurren fuera del runtime del juego. Una IA ciega al editor escribe código "correcto", el dev lo ejecuta y el resultado es silenciosamente roto. Esta sección está organizada para que una IA emita código que no se atasque a ciegas.
+
+### Enfoque nativo recomendado
+
+Godot ofrece 4 niveles de "código en editor", de menor a mayor compromiso. El error #1 de IA es saltar a `EditorPlugin` cuando bastaba `@tool`. Elige la capa mínima que resuelve:
+
+| Necesidad | Mecanismo | Vive en |
+|---|---|---|
+| Previsualizar/actualizar un nodo mientras editas la escena | `@tool` en el script del nodo | el `.gd` del nodo |
+| Botón "Generar" en el inspector de ese nodo | `@export_tool_button` (4.4+) | el `.gd` del nodo (`@tool`) |
+| Tipo reutilizable en "Add Node" / dock / importer / gizmo persistente | `EditorPlugin` (addon) | `addons/<x>/plugin.cfg` + `plugin.gd` |
+| Datos editables en inspector | custom `Resource` con `@export` (NO necesita `@tool` salvo lógica reactiva) | el `.gd` que `extends Resource` |
+
+Regla canónica: **`@tool` solo afecta al script donde está la anotación; no se hereda ni se propaga a hijos.** Y para addons: *"all GDScript files used by an EditorPlugin must also be `@tool` scripts, or they will behave as empty files in the editor."* Si olvidas `@tool` en el `EditorPlugin`, **el plugin no carga y no hay error obvio**.
+
+**El guardia central** es `Engine.is_editor_hint() -> bool`: `true` dentro del editor, `false` en runtime de juego. Todo bloque que toque escena de juego, autoloads, singletons de gameplay o `get_node` de hijos solo-runtime va envuelto en `if not Engine.is_editor_hint(): return`. Sin esa guardia, la lógica de juego corre dentro del editor: desde "raro" hasta **segfault al abrir la escena**, lo que impide editar el script desde Godot (GH-58883, GH-54999).
+
+Hechos exactos del ciclo de vida en editor: `_ready`, `_enter_tree`, `_process`, `_physics_process` y los setters **SÍ corren** en editor con `@tool`. `_process`/`_physics_process` están deshabilitados por defecto para nodos `@tool` recién instanciados (requieren `set_process(true)`), y rara vez los quieres en editor (queman CPU → freeze). Cambiar `@tool` **no recarga** una escena abierta: hay que cerrar/reabrir o reiniciar.
+
+**Reactividad correcta:** usa setters de propiedad, NO `_process`. El inspector dispara el setter al editar; ese es el "frame de actualización". Pero el setter dispara también **durante la deserialización de la escena**, cuando los hijos aún no existen → protege con `if not is_node_ready(): return`.
+
+**Botón de inspector (4.4+, vigente en 4.6):** `@export_tool_button("Etiqueta", "IconName") var x: Callable = metodo`. La var DEBE ser `Callable`; el 2º argumento es opcional y nombra un icono del tema `EditorIcons` (nombre de archivo de `editor/icons/`, case-sensitive; el default es `"Callable"`). En C# debe estar en clase `[Tool]` y ser propiedad expression-bodied, o salen los diagnósticos `GD0108` (no está en tool class) y `GD0111` (no es expression-bodied). El viejo hack `@export var bool` con setter auto-reseteado queda obsoleto.
+
+### Generación procedural — el contrato de persistencia
+
+Para 3D usa **`GridMap.set_cell_item(position: Vector3i, item: int, orientation: int = 0)`** — NO `set_cell()`, que es TileMap 2D (confusión recurrente de IA). Claves nicho:
+- `item` es un **ID del `MeshLibrary`**, no un índice arbitrario. Léelos con `mesh_library.find_item_by_name(...)` / `get_item_list()`. Un ID inexistente = celda vacía silenciosa. `GridMap.INVALID_CELL_ITEM` (`-1`) borra.
+- `orientation` NO son grados: es un índice de ortho-rotación (0–23). Construye un `Basis` ortogonal y conviértelo; pasar `90` rota mal.
+- GridMap es **un solo nodo que serializa sus propias celdas** → no necesita owner por celda. Esa es su ventaja sobre instanciar miles de nodos sueltos.
+
+**El pitfall que corrompe escenas (`owner`):** si en lugar de GridMap añades nodos con `add_child`, **no se guardan en el `.tscn` salvo que les fijes `owner = get_tree().edited_scene_root`** (GH-37144, GH-95646, GH-82756). Orden obligatorio: `add_child()` PRIMERO, `owner =` DESPUÉS (asignar owner antes lanza `Condition '!is_inside_tree()' is true`). Un padre con owner NO propaga owner a sus hijos: cada descendiente que quieras guardar lo necesita. `edited_scene_root` es `null` si no hay escena abierta (p.ej. dentro de un importer) → comprueba antes.
+
+**Decisión clave de diseño (donde los tres lentes convergen):** para mazmorras procedurales, **NO bakees al `.tscn`**. Genera en runtime (`_ready` con `is_editor_hint()` false) o en editor SIN owner (solo preview/visual). Reserva el bake-con-owner para cosas que un diseñador retocará a mano. Si bakeas con owner, **borra los hijos previos antes de regenerar** (`for c in get_children(): c.free()`) o acumulas duplicados y corrompes la escena.
+
+Para miles de props/vegetación usa **`MultiMeshInstance3D` + `MultiMesh`** (un draw call). Orden EXACTO: fija `transform_format` (y `use_colors`/`use_custom_data` si aplica) **ANTES** de `instance_count`; tras asignar `instance_count` ya no puedes cambiar el formato, y cambiar `instance_count` **resetea** los transforms. Luego `set_instance_transform(i, t)`. Mutar `visible_instance_count` cada frame causa picos. Para 20k+ con colisión, baja a `RenderingServer`/`PhysicsServer3D`.
+
+### Pitfalls y mensajes de error literales
+
+| Mensaje / síntoma literal | Causa | Fix |
+|---|---|---|
+| Nodos visibles en viewport pero **ausentes del árbol y `.tscn`** | falta `owner` | `nodo.owner = get_tree().edited_scene_root` tras `add_child` |
+| `Invalid access to property or key 'X' on a base object of type 'null instance'` | `_ready`/`_process` en editor antes de poblar `@export`, o export dejado en null | guardia `if x == null: return` + `if not Engine.is_editor_hint(): return` |
+| Escena **"invalid/corrupt"**, editor crashea al abrir | tool serializó `= null` / leyó var de script padre en editor | editar `.tscn` con editor EXTERNO, borrar líneas `prop = null`; mantener tool scripts autocontenidos (GH-73905, GH-79545) |
+| Editor **se congela / 100% CPU** al editar una propiedad | bucle setter → regeneración → setter, getter pesado, o `notify_property_list_changed()` re-disparando | regeneración diferida con flag `_dirty`, o botón explícito; nunca generar pesado en `_process` de editor (GH-83696, GH-111635) |
+| Botón modifica un Resource pero **se pierde al reabrir** | no marcado dirty / colisión de caché | `ResourceSaver.save(res, res.resource_path)`, `take_over_path()`, o `resource_local_to_scene = true` (GH-98331) |
+| Plugin **no aparece** tras activarlo | falta `@tool` en el EditorPlugin, o no reiniciaste | añadir `@tool`; desactivar/reactivar o reiniciar editor |
+| Tipo custom **sigue apareciendo** tras desactivar plugin | falta `remove_custom_type` en `_exit_tree` | limpieza simétrica de TODO lo creado en `_enter_tree` |
+| Gizmo nunca se dibuja, sin error | `_has_gizmo` no devuelve true / no registrado | `add_node_3d_gizmo_plugin` + `_has_gizmo(node)` → true |
+| `set_cell_item` no pone nada | `item` ID inexistente en MeshLibrary | `find_item_by_name` antes; `push_error` si `< 0` |
+| MultiMesh pierde todas las transforms | cambiaste `instance_count` después de setear transforms | `instance_count` primero, transforms después |
+| `"Child node disappeared while duplicating"` | sub-hijos generados por tool con `owner` mal asignado al duplicar | revisar ownership; evitar bake innecesario (GH-116902) |
+| Script `@tool` "no hace nada en editor" | falta `@tool` en línea 1, o no reabriste la escena | `@tool`; reabrir escena/reiniciar editor |
+
+**Trampa de `_init()` en Resources (GH-68427):** dentro de `_init()` los `@export` aún tienen **valores por defecto**, no los serializados. No inicialices lógica dependiente de exports en `_init()`; hazlo perezosamente o en un setter.
+
+### Cómo no quedarte atascado
+
+Una IA no ve el editor, pero **valida headless por CLI** (esto convierte fallos invisibles en stdout parseable; recétalo SIEMPRE antes de decir "listo"):
+
+```bash
+# 1. ¿Compila el script @tool / plugin? (parsea, no ejecuta). -s == --script
+godot --headless --check-only --script res://addons/dungeon/plugin.gd
+
+# 2. Re-importar recursos/.uid sin GUI (resuelve "Cannot open file ... uid://...")
+godot --headless --import --quit-after 2
+
+# 3. Ejecutar un script suelto que invoque la generación y haga asserts
+godot --headless --script res://tools/test_gen.gd --quit-after 1
+
+# 4. Abrir el proyecto, dejar correr @tool/plugin unos frames y cazar errores de _enter_tree
+godot --headless --verbose --editor --quit-after 3
+```
+
+Verificación ciega del resultado: como no hay GUI, mete `assert(get_used_cells().size() > 0)` / `assert(multimesh.instance_count == N)` dentro del propio script tool — es el único "ojo" disponible.
+
+**Procedimiento de emergencia si el editor crashea en bucle por un `@tool`:**
+1. NO abras el proyecto en el editor. Edita el `.gd` ofensor con editor EXTERNO (VSCode/vim) y comenta el código tóxico.
+2. Vacía la escena de arranque: en `project.godot`, `[application] run/main_scene=""`, para que el editor no cargue la escena tóxica al abrir.
+3. Si el `.tscn` arrastra `[node]` huérfanos o líneas `prop = null`, ábrelo como texto plano y bórralos a mano.
+4. Reimporta con `godot --headless --import` y reabre.
+
+Reglas mentales fijas: si el síntoma "solo pasa en editor" → falta `if not Engine.is_editor_hint(): return`. Si "solo en juego" → el guardia está invertido.
+
+### Específico 4.6 (APIs muertas que la IA arrastra)
+
+- `.tscn` **ya no escribe `load_steps`**; los recursos usan `uid://` + archivos `.uid` (desde 4.4). Si una IA escribe `.tscn`/`.tres` a mano con `load_steps=` o paths `res://` duros donde se espera `uid://`, romperá referencias. Fix: **Project > Tools > Upgrade Project Files**, nunca escribir UIDs a mano.
+- Shaders en gizmos/overlays: `SCREEN_TEXTURE`/`DEPTH_TEXTURE` eliminados → `uniform sampler2D tex : hint_screen_texture;`.
+- AnimationPlayer: props del tipo *animation-NAME* pasaron de `String` a `StringName` (GH-110767) — relevante si el generador setea animaciones por código; son nombres de propiedad, NO de track.
+- `@abstract` (desde 4.5): un `@tool @abstract` no es instanciable; no lo pongas en algo que el inspector intente crear en "Add Node".
+- Tras actualizar a 4.6 hay un caso reportado de tool scripts que pierden acceso a vars de clases extendidas → corre Upgrade Project Files.
+
+### Addon vs construirlo
+
+- **Generador para TU RPG** (rooms, spawners, terreno) → **NO addon.** `@tool` + `class_name` + `@export_tool_button`. Vive en el árbol del juego, cero `plugin.cfg`, cero reinicios, se versiona con el proyecto. `class_name` registra el tipo en "Add Node" sin addon; `add_custom_type` solo se justifica si necesitas icono propio sin tocar la clase base, o que el tipo desaparezca al desactivar el plugin.
+- **EditorPlugin solo si** necesitas dock/panel propio, gizmo 3D persistente (`EditorNode3DGizmoPlugin` solo se registra desde un plugin → fuerza el camino addon), importer custom (`EditorImportPlugin`), inspector custom (`EditorInspectorPlugin`), o empaquetar para AssetLib. Cuesta el ciclo activar/reiniciar y limpieza `_enter_tree`/`_exit_tree`.
+- **No reinventes geometría/scatter genérico.** Para sembrar props sobre terreno, **ProtonScatter** (HungryProton/scatter, maduro, basado en MultiMesh). Para mazmorras de prefabs modulares, **SimpleDungeons** (majikayogames). Para aprender algoritmos (BSP, biomas), lee **GDQuest godot-4-procedural-generation** — léelo, no lo importes. Construye tú solo la lógica de gameplay específica (qué enemigos, qué loot por celda).
+
+**Veredicto ponytail:** la mejor herramienta de editor es la que no escribes. Antes de tocar `EditorPlugin`, pregúntate si `@tool` + `class_name` + `@export_tool_button` ya lo resuelve — casi siempre sí. Antes de instanciar mil nodos con `owner`, usa **GridMap** o **MultiMesh** (un nodo que serializa solo, sin el infierno de ownership). Antes de bakear al `.tscn`, genera en runtime con la guardia `is_editor_hint()`. Y antes de escribir un scatter o un dungeon generator desde cero, mira ProtonScatter/SimpleDungeons. El editor es un mundo que no ves: cuanto menos código tuyo corra ahí, menos formas tienes de corromper la escena a ciegas.
+
+## 25. VFX y partículas como gameplay
+
+VFX en un RPG 3D NO es decoración: una bola de fuego que explota en chispas al chocar, una estela de espada, sangre en el suelo, un volley de flechas o un vórtice que arrastra partículas son *gameplay legible*. El reto para una IA que no ve el editor es que **el 80% de los atascos de VFX no producen ningún error en consola**: el código es "correcto", `emitting = true`, y simplemente no se ve nada. Esta sección está organizada alrededor de esos fallos silenciosos y de cómo escribir invariantes en código en vez de pulsar botones del editor.
+
+### Enfoque nativo recomendado
+
+Arquitectura canónica para combate: **la lógica de combate NO instancia ni configura partículas**. Emite una señal (`hit`, `died`, `parried`) con un payload (posición, normal, tipo de daño); un `VfxManager` (autoload) escucha y dispara el VFX desde un **pool pre-calentado**. Esto desacopla presentación de gameplay y permite hacer swap GPU↔CPU por plataforma sin tocar el combate.
+
+Mapa de nodos nativos 4.6 (verificados contra `docs.godotengine.org`):
+
+| Efecto de gameplay | Nodo / recurso nativo 4.6 | Nota clave |
+|---|---|---|
+| Impacto / explosión / chispas | `GPUParticles3D` (`one_shot=true`) + `ParticleProcessMaterial` | re-disparo con `restart()`, NUNCA `emitting=true` |
+| Fireball → chispas al chocar | `sub_emitter` (NodePath) + `ParticleProcessMaterial.sub_emitter_mode = SUB_EMITTER_AT_COLLISION` | exige colisión activa |
+| Estela de espada / proyectil | `GPUParticles3D.trail_enabled` + `RibbonTrailMesh`/`TubeTrailMesh` | requiere `BaseMaterial3D.use_particle_trails = true` |
+| Sangre / quemaduras / runas | `Decal` | proyecta en su eje **−Y local** |
+| Volley de flechas / hierba | `MultiMeshInstance3D` + `MultiMesh` | un draw call |
+| Atracción / viento / vórtice | `GPUParticlesAttractor3D` (Box/Sphere/VectorField) | solo dentro del AABB del emisor |
+| Colisión con el mundo | `GPUParticlesCollision3D` (Box3D/Sphere3D/SDF3D/HeightField3D) | **solo GPU**, NO ve PhysicsBody3D/Jolt |
+| Fallback Web/Compatibility | `CPUParticles3D` | sin colisión/attractors/sub-emitters/compute |
+
+Propiedades canónicas de `GPUParticles3D`: `emitting`, `amount` (≥1), `one_shot`, `explosiveness` (0–1), `lifetime`, `speed_scale`, `fixed_fps`, `process_material`, `draw_pass_1`..`draw_pass_4`, `sub_emitter` (NodePath), `trail_enabled`, `trail_lifetime`, `visibility_aabb` (AABB). Señal: `finished` — **se emite SOLO con `one_shot == true`**, nunca en loop. Métodos: `restart()`, `emit_particle(...)`, `capture_aabb()`.
+
+Nombres C# (.NET 8): la clase es `GpuParticles3D` (PascalCase, no `GPUParticles3D`), `Aabb`, `VisibilityAabb`, `OneShot`, `Emitting`, `Restart()`, evento `Finished`.
+
+### Pitfalls y mensajes de error literales
+
+**ATASCO #1 — partículas invisibles por `visibility_aabb` (el que más mata a una IA ciega).**
+Síntoma: código perfecto, `emitting = true`, sin error, y nada se ve; o parpadea/desaparece al mover la cámara. Causa: el `visibility_aabb` (heredado de `GeometryInstance3D`) es la caja que debe estar en pantalla para que el sistema se *procese*; por defecto es pequeño y **local al nodo**. Si las partículas vuelan fuera (velocidad alta, emisor en movimiento siguiendo un proyectil), el motor culling-ea TODO el emisor. El fix "canónico" es el botón **Particles → Generate AABB**, que una IA NO puede pulsar. Además (GH-93567) **el AABB delimita también la zona de colisión**: un AABB pequeño rompe colisión en silencio. Y `GeometryInstance3D.custom_aabb`, si tiene valor no-default, **sobrescribe** `visibility_aabb`.
+Fix por código: AABB amplio explícito + `extra_cull_margin`, o `capture_aabb()` tras un frame (equivalente al botón).
+
+**ATASCO #2 — one-shot que no re-dispara (impactos que solo funcionan la primera vez).**
+Con `one_shot = true`, poner `emitting = true` **no reinicia** el ciclo si quedan partículas vivas en GPU (GH-79689, GH-83909, GH-93991). En combate rápido el segundo golpe no muestra nada. Fix: usar **`restart()`** siempre. Nunca `emitting = false; emitting = true`.
+
+**ATASCO #3 — la señal `finished` que no llega (rompe el pool).**
+`finished` solo se emite con `one_shot`; llega con retraso variable (sim en GPU); bugs históricos: espuria en `_ready` (corregido en PR-101596), no emitida con one_shot puesto por GDScript (GH-93991), o suprimida por una pista RESET de `AnimationPlayer` (GH-85802). Fix defensivo: NO confíes solo en la señal; respáldala con un `Timer` de seguridad = `lifetime * 1.5 / speed_scale`, y haz el callback de reciclaje **idempotente** (puede llamarse dos veces).
+
+**ATASCO #4 — lag spike de la primera instancia (GH-87891).** La primera emisión compila/sube el shader de proceso → pico de frame. NO instancies VFX en caliente: pre-calienta el pool con un `restart()` al cargar el nivel, fuera de cámara.
+
+**ATASCO #5 — Web/Compatibility falla en silencio.** Compatibility (OpenGL ES 3.0 / WebGL 2) **no tiene compute shaders ni `RenderingDevice`**. En Web (forzado a Compatibility, **sin C#**) el comportamiento de `GPUParticles3D` es poco fiable entre versiones: o no renderiza sin warning, o cae a sim CPU silenciosa con features avanzadas (attractors/turbulence/colisión) comportándose distinto (GH-107633, GH-100872, GH-84072). No confíes en ningún resultado concreto: prepara escenas `*_cpu.tscn` con `CPUParticles3D` por adelantado y detecta el backend en runtime con `RenderingServer.get_rendering_device() == null` o `OS.has_feature("web")`. La conversión GPU→CPU en editor no preserva todo (ring emission GH-100946, comportamiento raro GH-97621); revísala a mano.
+
+**ATASCO #6 — trails de espada rotos.** Tres cosas obligatorias o no hay estela (sin error): `trail_enabled=true`, un `RibbonTrailMesh`/`TubeTrailMesh` en `draw_pass_1`, y **`use_particle_trails=true` en el material del mesh**. Subir `sections` a ≥7 rompe la geometría (extremos conectados al origen, GH-81109): mantener **≤6**. Secciones/subdivisiones van en el MESH, no en el nodo (a diferencia de 2D). En Web los trails han fallado en silencio (GH-88748).
+
+**ATASCO #7 — sub-emitters.** Cuando `sub_emitter` está asignado, el nodo hijo **deja de emitir por su cuenta** (debe quedar con `emitting=false`; lo gobierna el padre). Para `SUB_EMITTER_AT_COLLISION` el material del padre necesita `collision_mode = COLLISION_RIGID` (o `COLLISION_HIDE_ON_CONTACT`) y un `GPUParticlesCollision*3D` dentro del AABB.
+
+**ATASCO #8 — colisión / SDF que "no hace nada".** Las partículas **NO colisionan con PhysicsBody3D ni Jolt**, solo con nodos `GPUParticlesCollision3D`. `collision_mode` por defecto es `COLLISION_DISABLED`. `GPUParticlesCollisionSDF3D` requiere **Bake SDF** (botón de editor) y tras bakear puede no colisionar hasta guardar/recargar (GH-60994). Pragmático para una IA: usa `GPUParticlesCollisionBox3D`/`Sphere3D`/`HeightField3D` (dinámicos, **sin bake**) en vez de SDF.
+
+**ATASCO #9 — Decal invisible o mal orientado.** El `Decal` proyecta por su eje **−Y local**; si no lo orientas, la sangre va siempre hacia abajo. Debe tener `texture_albedo` O `texture_emission` asignado, y `albedo_mix > 0`, o es invisible sin error. `cull_mask` controla qué capas recibe (sangre en suelo, no en jugador). Presupuesto limitado por clúster: usa pool con máximo, no `instantiate` infinito. Cuidado con `look_at` cuando la normal es paralela al up (`Up vector and direction ... are aligned`): early-return o up alternativo.
+
+**ATASCO #10 — MultiMesh todo en el origen.** Orden obligatorio: `transform_format = TRANSFORM_3D` → `mesh` → `instance_count` → `set_instance_transform(i, xf)`. Si pones transforms antes de `instance_count`, salen al origen. Prefiere `set_instance_transform()` sobre `set_buffer()` (GH-76884). `visible_instance_count` revela progresivamente pero re-subir buffers cada frame da pico; no lo toques por frame. El AABB agregado puede cullear tramos: considera `custom_aabb`.
+
+Errores literales que SÍ salen en consola:
+
+| Mensaje literal | Causa | Fix |
+|---|---|---|
+| `Condition "p_amount < 1" is true.` | `amount = 0` | `amount >= 1` |
+| `Index p_pass = N is out of bounds (draw_passes = M).` | asignar `draw_pass_X` fuera de rango | subir `draw_passes` antes |
+| `Compute shaders are not supported on the Compatibility rendering backend.` | features GPU en Web | fallback `CPUParticles3D` |
+| `Nonexistent function 'restart'` / cast inválido | cast mal a `GPUParticles3D`, o `null` | verifica `as GPUParticles3D` |
+| Shader: `SCREEN_TEXTURE`/`DEPTH_TEXTURE` no declarado | shader VFX pre-4.0 | `uniform sampler2D t : hint_screen_texture;` / `hint_depth_texture` |
+| `Up vector and direction ... are aligned` | normal paralela al up en `look_at` | up alternativo / early-return |
+| errores de `load_steps`/recursos al cargar `.tscn` viejo | proyecto pre-4.4 sin `.uid` | **Project → Tools → Upgrade Project Files** |
+
+### Cómo no quedarte atascado
+
+Sin editor, escribe **invariantes defensivas** y valida en headless:
+
+```bash
+godot --headless --check-only --script res://vfx/vfx_pool.gd   # valida sintaxis/tipos
+godot --headless --import                                       # genera .uid / importa recursos
+godot --verbose --headless --quit-after 5 res://test_vfx.tscn   # smoke test + warnings de render
+godot --export-release "Web" build/index.html                   # OJO: Web = Compatibility, sin C#
+```
+
+Checklist de invariantes que una IA ciega DEBE codificar:
+1. AABB explícita por código (`visibility_aabb` amplio o `capture_aabb()` tras 1 frame) — nunca depender de "Generate AABB".
+2. Re-disparo de one-shot SIEMPRE con `restart()`.
+3. Reciclaje del pool respaldado con `Timer` idempotente, no solo `finished`.
+4. Pool pre-calentado (un `restart()` al cargar) contra el lag spike.
+5. Detectar Compatibility en runtime y hacer swap a `CPUParticles3D`; tener escenas CPU/GPU separadas en disco.
+6. En trails: comprobar `use_particle_trails` y `sections <= 6`.
+7. En sub-emitter: hijo con `emitting=false` + `collision_mode` activo.
+8. En `.tscn` generados a mano: NO escribir `load_steps` (4.6 ya no lo usa); recursos vía `uid://` + `.uid`.
+
+Recuerda 4.6: `.tscn` ya no escribe `load_steps`; recursos usan `uid://` + ficheros `.uid` (desde 4.4). En shaders de VFX, `SCREEN_TEXTURE`/`DEPTH_TEXTURE` fueron eliminados → `hint_screen_texture`/`hint_depth_texture`.
+
+### Addon vs construirlo
+
+- **Nativo (construir)**: impactos one-shot, sub-emitters, attractors, colisión Box/Sphere/HeightField, decals planos de sangre, volleys MultiMesh, trails ≤6 sections. Todo robusto en 4.6; meter addons aquí es deuda.
+- **Estela de espada de alta fidelidad o en Web**: el trail nativo sirve si ≤6 sections y no apuntas a Web; si no, [`celyk/GPUTrail`](https://github.com/celyk/GPUTrail) (trail GPU) o un `ImmediateMesh`-ribbon procedural para un corte limpio determinista.
+- **Decals sobre geometría curva / material custom**: el nativo no soporta material custom (proposal #4938) → [`Master-J/DecalCo`](https://github.com/Master-J/DecalCo) (shader-based). Para sangre plana en suelo/pared, `Decal` nativo basta.
+
+**Veredicto ponytail:** El mejor VFX es el que no escribes a mano: GPUParticles3D + ParticleProcessMaterial + Decal + MultiMesh cubren el 100% de un RPG sin shaders ni nodos custom. La trampa no es la API — es que el editor "arregla" en silencio (Generate AABB, Bake SDF, Convert to CPU) cosas que una IA ciega tiene que codificar. Reusa los nodos nativos, dispara por señal desde un pool pre-calentado, fija el AABB y usa `restart()` por código, y prepara escenas `*_cpu.tscn` para Web. Cero addons hasta que el look lo exija.
+
+## 26. GDExtension (C++ y más allá)
+
+GDExtension es la API oficial de Godot 4 (sucesora de GDNative) para registrar clases nativas (C++ via `godot-cpp`, también Rust/Swift/D via bindings de terceros) que el motor carga como `.so/.dll/.dylib`/`.framework` en runtime, **sin recompilar el motor**. No es la herramienta por defecto para gameplay.
+
+### Enfoque nativo recomendado
+
+Para un RPG 3D en 4.6, el ~95% del juego (controlador del jugador, inventario, diálogo, quests, cámara, UI, máquina de estados de combate) está limitado por llamadas a la API del motor, no por la velocidad del lenguaje. En cuanto tocas `get_node()`, `move_and_slide()` o instancias nodos, el overhead del lenguaje desaparece. Por tanto:
+
+**Regla de decisión (orden de preferencia):**
+1. **GDScript 2.0 tipado** (default). Las anotaciones de tipo lo aceleran de forma notable y dan autocompletado; cubre casi todo el gameplay sin ciclo de compilación.
+2. **C# .NET 8** si ya tienes ecosistema .NET o lógica CPU-bound media. Caveat duro: **C# NO corre en web** (el renderer web es Compatibility).
+3. **GDExtension C++** SOLO para: (a) hot loops numéricos *perfilados* (voxel/mesh gen, pathfinding sobre decenas de miles de agentes, fluidos, física custom, generación procedural pesada); (b) **envolver una lib C/C++ existente** (recast/detour, SQLite, FMOD, Steam SDK, un solver propietario); (c) distribuir un `Node`/`Resource` reutilizable como addon binario.
+
+**NO uses GDExtension** para gameplay normal, para "ir más rápido" sin haber perfilado (la mayoría de cuellos en un RPG son draw calls / O(n²) mal escrito, no el lenguaje), ni para iteración rápida (añade ciclo SCons + recarga).
+
+**GDExtension vs módulo custom del motor:**
+
+| | GDExtension (`godot-cpp`) | Módulo custom |
+|---|---|---|
+| Build | Compilas TU lib aparte; el motor la carga en runtime | **Recompilas TODO el motor** + export templates |
+| Distribución | `.so/.dll/.dylib` + `.gdextension`, drop-in en binario stock | Build propio del motor |
+| Iteración | Minutos (hot-reload `reloadable=true`, frágil) | Horas |
+| Acceso al core | Solo API pública expuesta | Total (internals) |
+
+Si necesitas tocar internals del renderer no expuestos → módulo. En cualquier otro caso → GDExtension.
+
+**Trampa C# ↔ GDExtension:** Godot **no genera bindings C# de una GDExtension**. Si tu proyecto es C#-first, llamar a tu clase C++ exige un puente C# → GDScript → C++. Tenlo presente al decidir arquitectura.
+
+**Versión de `godot-cpp` (atasco #1):** la rama debe casar con tu Godot. Para 4.6 usa la rama/tag `4.6` (en `godot-cpp` v10.x el binding se versiona aparte y puedes targetear con `api_version`). Compatibilidad **hacia adelante, no hacia atrás**: una extensión compilada contra 4.3 corre en 4.4/4.5/4.6; una compilada contra 4.6 **no** carga en 4.5 ("API mismatch"). Fija `compatibility_minimum` lo más bajo que tus APIs permitan. Parte del **template oficial** (`godotengine/godot-cpp-template`), que trae CI multiplataforma, en vez de escribir el `SConstruct` a mano.
+
+```bash
+git submodule add -b 4.6 https://github.com/godotengine/godot-cpp
+git submodule update --init --recursive
+# Si tu Godot 4.6 es un build no oficial, regenera la API:
+godot --headless --dump-extension-api    # -> extension_api.json
+scons platform=linux custom_api_file=extension_api.json
+```
+
+**Los 4 archivos mínimos** (ver bloque de ejemplos para `.gdextension`, `register_types.cpp`, la clase C++ y el uso desde GDScript). Puntos no negociables:
+- `entry_symbol` del `.gdextension` **idéntico** al nombre de la función `extern "C"`.
+- Macro `GDCLASS(Clase, Base)` como primer miembro; sin ella la clase no se registra.
+- `_bind_methods()` con `ClassDB::bind_method(...)` para TODO lo que use GDScript; un método que no se bindea ahí es **invisible** desde GDScript aunque compile.
+- Registrar en `MODULE_INITIALIZATION_LEVEL_SCENE` para `Node`/`Resource`; nivel equivocado = clase no aparece en "Create New Node" sin error claro.
+- Variantes: `GDREGISTER_CLASS` (instanciable), `GDREGISTER_ABSTRACT_CLASS` (base no instanciable), `GDREGISTER_VIRTUAL_CLASS`.
+
+**Build SCons** (una lib por `platform × target × arch`; no hay binario universal salvo el `.framework` fat de macOS):
+```bash
+scons platform=linux   target=template_debug   arch=x86_64
+scons platform=windows target=template_release arch=x86_64
+scons platform=macos   target=template_release           # .framework universal
+# use_static_cpp=yes para enlazar libstdc++ estáticamente (ver GLIBCXX abajo)
+```
+El sufijo del binario producido por SCons **debe** casar letra por letra con los paths del bloque `[libraries]`.
+
+**.uid / migración (4.6):** los `.tscn` ya **no escriben `load_steps`** y los recursos usan `uid://` + ficheros `.uid` (desde 4.4). No inventes UIDs a mano; edita por `res://` path y deja que Godot resuelva. Tras importar un proyecto pre-4.4 corre **Project > Tools > Upgrade Project Files** (en headless, `--headless --import` regenera los `.uid`).
+
+### Pitfalls y mensajes de error literales
+
+- `No GDExtension library found for current OS and architecture (linux.x86_64) in configuration file`
+  - **Trampa sutil y verificada (GH godot-docs #7864):** `compatibility_minimum = 4.6` **sin comillas** produce este error de OS/arch *engañoso*. Fix: `compatibility_minimum = "4.6"` (siempre entre comillas).
+  - Otras causas: claves con formato viejo `<plat>.<arch>` en vez de `<plat>.<target>.<arch>`; o la lib no existe en `res://bin/` con el nombre exacto (no compilaste ese target/arch).
+- `Can't open dynamic library: ...dll. Error: ... is not a valid Win32 application.` → mismatch de arquitectura (compilaste 32-bit, editor 64-bit). Recompila `arch=x86_64`.
+- `Can't open dynamic library ... Error 126: The specified module could not be found.` (Windows) → la DLL existe pero le falta una **dependencia** (otra GDExtension, runtime MSVC, la lib C++ que envolviste). Copia las DLLs dependientes al mismo `bin/` y/o decláralas en `[dependencies]`; depura con `dumpbin /dependents`.
+- `Can't open dynamic library ... libstdc++.so.6: version 'GLIBCXX_3.4.32' not found` (Linux/Flatpak) → compilaste contra un libstdc++ más nuevo que el destino. Fix: `use_static_cpp=yes`, o compila en toolchain viejo (manylinux / Steam Runtime).
+- `Error 5: Access Denied` al abrir la DLL → antivirus o instancia previa de Godot con la lib en uso.
+- Clase no aparece en "Create New Node" / `Ejemplo.new()` da "Identifier not found" → falta `GDCLASS`, nivel de init ≠ SCENE, o `entry_symbol` desincronizado.
+- Método invisible desde GDScript sin error → falta `ClassDB::bind_method` en `_bind_methods()`.
+- `GDExtension library cannot be reloaded while editor is running` / crash al recompilar (GH #66231, #88845, godot-cpp #1589) → hot-reload con `reloadable=true` es frágil. En dev: cerrar editor → rebuild → reabrir.
+- Métodos ausentes solo en Release (GH #86206) → compila **ambos** `template_debug` y `template_release`; el export busca la variante release.
+- Android: "Missing shared library in export" (godot-cpp #905) → faltan entradas por ABI (`android.debug.arm64`, `android.release.x86_64`, ...) o no compilaste con el NDK para esos ABIs.
+- **Pitfall conceptual ABI:** MSVC vs MinGW vs distintas versiones de GCC/Clang dan ABIs incompatibles; binarios de SCons vs CMake/MSVC pueden diferir (godot-cpp #1459). Una toolchain por plataforma. Si el editor es build `precision=double`, la extensión también debe compilarse `precision=double` o no carga.
+
+### Cómo no quedarte atascado
+
+Una IA headless no ve el panel de errores ni el popup "Library not loaded". Fuerza la salida por terminal:
+```bash
+# Fuerza importar + registrar la extensión y volcar errores de carga
+godot --headless --editor --quit-after 2 --verbose --path project/ 2>&1
+# Alternativa: solo re-importar (regenera .uid)
+godot --headless --import --path project/
+# Aísla el error de carga de la lib (path exacto + código de error del SO)
+godot --headless --verbose --path project/ 2>&1 | grep -i "dynamic library\|gdextension"
+# Valida que un script que usa la clase nativa resuelve la API
+godot --headless --check-only --script res://uses_example.gd --path project/
+```
+- "Edité el `.gdextension` pero no carga la clase" → Godot necesita **abrir el proyecto una vez** para escanear la extensión: `--headless --editor --quit-after 2` o `--headless --import`.
+- "Mi cambio C++ no aparece" → no recompilaste; sigue cargando la `.dll` vieja. Rebuild SCons + reinicia (hot-reload no es fiable).
+- Sin `--verbose` el fallo de carga de lib es **mudo**; con él ves el path exacto y el código de error.
+
+### Addon vs construirlo
+
+Antes de escribir C++: ¿lo resuelve C# (.NET 8)? Si sí, para. ¿Existe un addon GDExtension maduro? Reúsalo: **Terrain3D** (terreno grande, PC+Android), **GodotSteam** (Steam, doc de build excelente), git plugin, SQLite. Estos resuelven ABI/CI por ti con releases precompiladas — **verifica que traen binarios para TODAS tus plataformas de export**; un addon sin la arch de tu target falla la carga en export. Construye tú solo si: no existe addon, tienes un hot loop *medido*, o envuelves una lib propia/propietaria. En ese caso parte del **template oficial + CI multiplataforma** (Windows/Linux/macOS universal/Android×ABIs, debug y release ≈ decenas de combinaciones), nunca a mano.
+
+**Caveat web (adjudicado):** GDExtension **SÍ funciona en web** en 4.6, pero es frágil. Requiere Emscripten reciente y build con dlink; el modo de threads de la lib (`.wasm` con/sin pthread) **debe coincidir** con el ajuste "Thread Support" del export, o falla con `LinkError` de memoria compartida (GH #95077, #94537). Cambiar el thread mode solo surte efecto **tras recargar el proyecto**; con threads ON el servidor debe servir cabeceras COOP/COEP (cross-origin isolation). El soporte en Firefox es más limitado que en Chromium (GH #105717). Recuerda: web = Compatibility, **C# no corre en web**. Si web es target serio, mantén el hot path en GDScript o detrás de un feature-flag con fallback GDScript.
+
+**Veredicto ponytail:** el mejor GDExtension es el que no escribes. Tipa tu GDScript, perfila, y solo entonces baja a C++ — y solo el hot path o la lib que envuelves, nunca el gameplay. Reusa Terrain3D/GodotSteam antes que compilar nada. Si C# te basta y no apuntas a web, ni siquiera bajes a C++. El coste oculto de GDExtension no es escribir el código: es recompilar y mantener una lib por plataforma×target×arch para siempre.
 
 ## Filosofía aplicada: construir vs reusar y cómo no quedarte atascado
 

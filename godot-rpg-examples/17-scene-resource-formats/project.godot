@@ -1,0 +1,19 @@
+config_version=5
+
+[application]
+config/name="MiRPG"
+run/main_scene="uid://cecaux1sm7mo0"
+config/features=PackedStringArray("4.6", "Forward Plus")
+
+[autoload]
+GameState="*res://src/game_state.gd"
+EventBus="*res://src/event_bus.gd"
+
+[layer_names]
+3d_physics/layer_1="world"
+3d_physics/layer_2="player"
+3d_physics/layer_3="enemies"
+2d_render/layer_1="background"
+
+[rendering]
+renderer/rendering_method="forward_plus"

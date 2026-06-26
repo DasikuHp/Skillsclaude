@@ -1,0 +1,31 @@
+# CI Godot 4.6 headless — orden anti-atasco. Imagen con godot + export templates.
+name: verify
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: barichello/godot-ci:4.6.0
+    env:
+      GODOT_BIN: /usr/local/bin/godot
+      GODOT_DISABLE_LEAK_CHECKS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # FASE 0: poblar .godot/ (caché de import). NUNCA --quit; usa --quit-after 2.
+      - name: Import assets
+        run: timeout 300 godot --headless --path . --import --quit-after 2 --verbose || true
+
+      # FASE 1: validar sintaxis con exit code propio FIABLE.
+      - name: Validate scripts
+        run: godot --headless --path . --script res://ci/validate_all.gd
+
+      # FASE 2: smoke test con red anti-cuelgue (debugger invisible).
+      - name: Boot smoke test
+        run: timeout 120 godot --headless --path . --quit-after 90 </dev/null
+
+      # FASE 3: tests (GUT) — exit code fiable con -gexit.
+      - name: GUT
+        run: |
+          timeout 300 godot --headless --path . \
+            -s res://addons/gut/gut_cmdln.gd \
+            -gdir=res://test -ginclude_subdirs -gexit </dev/null

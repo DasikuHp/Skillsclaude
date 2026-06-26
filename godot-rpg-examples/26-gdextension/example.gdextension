@@ -1,0 +1,24 @@
+[configuration]
+; entry_symbol DEBE coincidir letra por letra con la funcion extern "C"
+entry_symbol = "example_library_init"
+; SIEMPRE entre comillas: sin comillas -> error enganoso "No GDExtension library found"
+compatibility_minimum = "4.6"
+reloadable = true                 ; hot-reload en editor; solo en dev (es fragil)
+
+[libraries]
+; claves = <plataforma>.<target>.<arch> ; el path DEBE casar con el sufijo de SCons
+linux.debug.x86_64     = "res://bin/libexample.linux.template_debug.x86_64.so"
+linux.release.x86_64   = "res://bin/libexample.linux.template_release.x86_64.so"
+windows.debug.x86_64   = "res://bin/libexample.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/libexample.windows.template_release.x86_64.dll"
+macos.debug            = "res://bin/libexample.macos.template_debug.framework"
+macos.release          = "res://bin/libexample.macos.template_release.framework"
+android.debug.arm64    = "res://bin/libexample.android.template_debug.arm64.so"
+android.release.arm64  = "res://bin/libexample.android.template_release.arm64.so"
+; variantes web (thread mode DEBE casar con "Thread Support" del export):
+web.debug.threads.wasm32   = "res://bin/libexample.web.template_debug.threads.wasm32.wasm"
+web.release.threads.wasm32 = "res://bin/libexample.web.template_release.threads.wasm32.wasm"
+
+[dependencies]
+; libs C++ externas que tu binario necesite, por plataforma (evita Error 126 en Windows)
+; windows.debug.x86_64 = { "res://bin/steam_api64.dll" : "" }
