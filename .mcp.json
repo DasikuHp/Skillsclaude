@@ -1,6 +1,11 @@
 {
-  "_comment": "EJEMPLO del shape http del MCP Godot AI. La fuente de verdad es el botón Configure del dock del addon (Godot AI), que ejecuta 'claude mcp add --scope user --transport http godot-ai <url>' con la URL/puerto DINÁMICO de la sesión del editor. No fijes el puerto a mano. Ver skills/godot-46-rpg/references/27-godot-ai-mcp.md.",
+  "_comment": "Dos backends MCP (ver references/30-mcp-routing-loop.md). RECOMENDADO: ejecuta 'npx -y summer-engine@latest setup claude-code --yes' — escribe la config de Summer (stdio) en la config de USUARIO de Claude Code y NO colisiona con este .mcp.json. El bloque 'summer-engine' de abajo es el patrón inferido (command 'npx ... mcp'); si usas summer setup, puedes borrarlo. 'godot-ai' es HTTP con URL dinámica del dock (no fijes el puerto a mano).",
   "mcpServers": {
+    "summer-engine": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "summer-engine@latest", "mcp"]
+    },
     "godot-ai": {
       "type": "http",
       "url": "http://127.0.0.1:PUERTO_DINAMICO"

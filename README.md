@@ -35,10 +35,14 @@ skills/godot-46-rpg/           # la SKILL (entry point + contenido)
   no-op seguro sin `godot`. Desactiva con `GODOT_HOOK_DISABLE=1`.
 - **SessionStart**: warm-up de imports + orientación a `SKILL.md`.
 - **Comandos**: `/godot-new <n> <target>` (scaffold jugable), `/godot-add <sistema>`,
-  `/godot-verify`, `/godot-flow <Fn>` (flujos premium), `/godot-mcp` (conectar el editor).
+  `/godot-verify`, `/godot-flow <Fn>` (flujos premium), `/godot-mcp` (conectar el editor),
+  `/godot-summer [setup|new|context]` (integrar Summer Engine).
 - **Subagentes**: `godot-reviewer` (auditor ponytail read-only), `godot-scripter` (GDScript tipado).
-- **MCP Godot AI** (editor vivo): ~40 tools en 22 dominios; Claude inspecciona la escena,
-  crea nodos, corre el juego y saca capturas. Ver `skills/godot-46-rpg/references/27-godot-ai-mcp.md`.
+- **MCP (editor vivo)**: dos backends de la misma familia — **Summer Engine** (stdio,
+  engine en `:6550`, ~44 tools `summer_*` + ~27 agent skills + CLI; `references/29`) y
+  **Godot AI** (HTTP, ~40 tools; `references/27`). La skill **detecta el backend y enruta
+  por contrato de capacidades** con un **lazo auto-correctivo de convergencia**
+  (`references/30`); degrada a headless sin editor.
 - **Flujos premium** (`references/28-premium-flows.md`): encadenan el MCP en acciones caras y
   útiles — cablear un enemigo de combate, bindear el HUD, playtest con capturas, lazo auto-fix.
 - **Proyectos autosimbióticos**: `new_project.sh` deja en cada proyecto un `CLAUDE.md` + `.claude/`

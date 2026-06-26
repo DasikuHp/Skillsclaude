@@ -92,6 +92,8 @@ Lee SOLO la fila que aplica (progressive disclosure). `references/NN` = guía;
 | Nativo C++ (GDExtension) | [`26`](references/26-gdextension.md) | [`examples/26`](assets/examples/26-gdextension/) | [`r28`](references/research/28-gdextension.md) |
 | **MCP: editor vivo (Godot AI)** | [`27`](references/27-godot-ai-mcp.md) | — | — |
 | **Flujos premium (orquestar el MCP)** | [`28`](references/28-premium-flows.md) | — | — |
+| **Summer Engine (CLI+MCP+skills)** | [`29`](references/29-summer-engine.md) | — | — |
+| **Enrutado MCP + lazo auto-correctivo** | [`30`](references/30-mcp-routing-loop.md) | — | — |
 
 Doctrina y escalera completas: [`references/00-escalera-y-principios.md`](references/00-escalera-y-principios.md).
 Filosofía aplicada (construir vs reusar, anti-stuck): [`references/99-filosofia-aplicada.md`](references/99-filosofia-aplicada.md).
@@ -109,6 +111,16 @@ Para acciones de alto valor que encadenan varias tools (cablear un enemigo de co
 bindear el HUD, playtest con capturas, lazo auto-fix), usa los **flujos premium**:
 [`references/28-premium-flows.md`](references/28-premium-flows.md) (`/godot-flow <Fn>`).
 Sin editor vivo, degrada al lazo headless de `scripts/`.
+
+**Summer Engine** ([`references/29`](references/29-summer-engine.md)) es un motor AI-native
+(drop-in de Godot 4) con su propio MCP (stdio, engine vivo en `:6550`, ~44 tools `summer_*`)
+y ~27 agent skills. Si está presente, **prefiérelo y delega en sus skills/tools** (no
+reimplementes lo que ya trae): `/godot-summer setup` lo cablea, `/godot-summer new <tpl>
+<name>` scaffolda + añade el lazo de la skill. Esta skill **detecta el backend**
+(Summer stdio vs Godot AI HTTP vs headless) y **enruta por contrato de capacidades** con un
+**lazo auto-correctivo de convergencia** (lee el error real → arregla → re-play → escala si
+no converge): ver [`references/30`](references/30-mcp-routing-loop.md). Regla anti-stuck:
+**un verbo, un play, un vistazo**.
 
 ## Workflow: "Quiero un RPG" en 5 pasos
 
