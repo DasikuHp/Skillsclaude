@@ -94,10 +94,24 @@ Lee SOLO la fila que aplica (progressive disclosure). `references/NN` = guía;
 | **Flujos premium (orquestar el MCP)** | [`28`](references/28-premium-flows.md) | — | — |
 | **Summer Engine (CLI+MCP+skills)** | [`29`](references/29-summer-engine.md) | — | — |
 | **Enrutado MCP + lazo auto-correctivo** | [`30`](references/30-mcp-routing-loop.md) | — | — |
+| **Diseñar mecánicas** | [`31`](references/31-mechanics-design.md) | — | — |
+| **Gameplay loop / pacing** | [`32`](references/32-gameplay-loop.md) | — | — |
+| **Balance (sim/datos)** | [`33`](references/33-balance.md) | — | — |
+| **Arquitectura técnica** | [`34`](references/34-arquitectura-tecnica.md) | — | — |
+| **Assets y pipeline (gen-IA)** | [`35`](references/35-assets-pipeline.md) | — | — |
+| **UX / UI / accesibilidad** | [`36`](references/36-ux-ui.md) | — | — |
+| **Narrativa / diálogo / quests** | [`37`](references/37-narrativa.md) | — | — |
+| **Monetización (sin dark patterns)** | [`38`](references/38-monetizacion.md) | — | — |
+| **Performance / profiling** | [`39`](references/39-performance.md) | — | — |
+| **Publicación / export / tienda** | [`40`](references/40-publicacion.md) | — | — |
 
 Doctrina y escalera completas: [`references/00-escalera-y-principios.md`](references/00-escalera-y-principios.md).
 Filosofía aplicada (construir vs reusar, anti-stuck): [`references/99-filosofia-aplicada.md`](references/99-filosofia-aplicada.md).
 Respaldo full-text (todo en un archivo, para búsqueda): [`skillgodot4.6.md`](skillgodot4.6.md).
+
+## Focos de creador de videojuegos (jun 2026)
+
+Más allá de los sistemas, los **focos de producción** (diseño de mecánicas, gameplay loop, balance, arquitectura, assets/pipeline gen-IA, UX/UI, narrativa, monetización, performance, publicación) tienen cada uno su referencia jun-2026 con el estado del arte viable AHORA, cómo mejora la simbiosis con este flujo y cómo se adapta Claude: ver `references/31`–`references/40`. Cada una respeta ponytail y lazy-not-negligent.
 
 ## MCP: Claude controla el editor en vivo (Godot AI)
 
