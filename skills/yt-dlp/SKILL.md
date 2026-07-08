@@ -20,8 +20,15 @@ y de pip:
   johnvansickle.com).
 - `bin/ffmpeg.exe` y `bin/ffprobe.exe` — builds win64 (8.1.2 essentials,
   gyan.dev). En Windows, ya están "junto a yt-dlp" como pide la doc oficial.
+- `bin/yt-dlp.bat` (CMD) y `bin/yt-dlp.ps1` (PowerShell) — lanzadores para
+  Windows que localizan Python y pasan `--ffmpeg-location` automáticamente.
 
 Licencia GPL de ffmpeg en `bin/LICENSE-ffmpeg-*.txt`.
+
+> Ensamblado y verificado en Linux (contenedor de Claude Code); los `.exe`
+> son los builds oficiales win64 sin modificar y no se ejecutaron en ese
+> entorno. En Windows solo se necesita Python 3.9+ (python.org o Microsoft
+> Store) — ni pip, ni ffmpeg del sistema.
 
 ## Invocación
 
@@ -32,6 +39,15 @@ python3 <ruta-de-esta-skill>/bin/yt-dlp [opciones] URL
 
 También es ejecutable directamente (`./bin/yt-dlp`) si el sistema tiene
 `/usr/bin/env python3`.
+
+**En Windows** usa los lanzadores (añaden `--ffmpeg-location` solos):
+
+```bat
+bin\yt-dlp.bat [opciones] URL      &:: CMD
+```
+```powershell
+.\bin\yt-dlp.ps1 [opciones] URL    # PowerShell
+```
 
 ## Recetas clave
 
