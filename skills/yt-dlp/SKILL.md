@@ -5,14 +5,23 @@ description: |
   cientos de sitios más, o extrae su metadata (título, duración, formatos,
   subtítulos) sin descargar. Usar cuando el usuario pida descargar un vídeo,
   sacar el audio/mp3, obtener info de una URL de vídeo, o recortar una sección.
-  Incluye un binario yt-dlp autocontenido: no requiere pip ni el repo original.
+  Incluye yt-dlp y ffmpeg/ffprobe autocontenidos: no requiere pip, instalar
+  ffmpeg, ni el repo original.
 ---
 
-# yt-dlp (herramienta vendorizada)
+# yt-dlp (herramienta vendorizada, con ffmpeg incluido)
 
-Binario zipapp autocontenido en `bin/yt-dlp` (construido desde el paquete
-oficial de PyPI, versión 2026.07.04). Solo necesita `python3` — es
-independiente del repo https://github.com/yt-dlp/yt-dlp y de pip.
+Todo vive en `bin/`, independiente del repo https://github.com/yt-dlp/yt-dlp
+y de pip:
+
+- `bin/yt-dlp` — zipapp autocontenido (paquete oficial de PyPI, 2026.07.04);
+  solo necesita `python3`.
+- `bin/ffmpeg` y `bin/ffprobe` — builds estáticos linux x86-64 (7.0.2,
+  johnvansickle.com).
+- `bin/ffmpeg.exe` y `bin/ffprobe.exe` — builds win64 (8.1.2 essentials,
+  gyan.dev). En Windows, ya están "junto a yt-dlp" como pide la doc oficial.
+
+Licencia GPL de ffmpeg en `bin/LICENSE-ffmpeg-*.txt`.
 
 ## Invocación
 
@@ -30,12 +39,13 @@ También es ejecutable directamente (`./bin/yt-dlp`) si el sistema tiene
 # Metadata sin descargar (JSON)
 bin/yt-dlp -j --no-warnings "URL"
 
-# Descargar mejor calidad hasta 1080p como mp4
-bin/yt-dlp -f "bv*[height<=1080]+ba/b[height<=1080]/b" --merge-output-format mp4 \
-  -o "salida/%(title).80s.%(ext)s" "URL"
+# Descargar mejor calidad hasta 1080p como mp4 (usa el ffmpeg incluido para fusionar)
+bin/yt-dlp --ffmpeg-location bin/ -f "bv*[height<=1080]+ba/b[height<=1080]/b" \
+  --merge-output-format mp4 -o "salida/%(title).80s.%(ext)s" "URL"
 
-# Solo audio mp3
-bin/yt-dlp -x --audio-format mp3 --audio-quality 0 -o "salida/%(title).80s.%(ext)s" "URL"
+# Solo audio mp3 (usa el ffmpeg incluido para extraer)
+bin/yt-dlp --ffmpeg-location bin/ -x --audio-format mp3 --audio-quality 0 \
+  -o "salida/%(title).80s.%(ext)s" "URL"
 
 # Solo una sección (recorte en descarga)
 bin/yt-dlp --download-sections "*00:01:00-00:02:30" --force-keyframes-at-cuts "URL"
@@ -50,7 +60,11 @@ Flags recomendados por defecto: `--no-playlist --no-warnings --restrict-filename
 
 - Respeta el copyright y los Términos de Servicio de cada plataforma; descarga
   solo contenido que tengas derecho a usar.
-- Para fusionar vídeo+audio o extraer mp3 hace falta `ffmpeg` en el PATH.
+- Pasa siempre `--ffmpeg-location <ruta-de-esta-skill>/bin` para usar el ffmpeg
+  incluido (fusionar vídeo+audio, extraer mp3, recortes). Sin ese flag, yt-dlp
+  buscará ffmpeg en el PATH.
+- `bin/ffprobe` (o `ffprobe.exe`) sirve para inspeccionar cualquier fichero:
+  `bin/ffprobe -v error -show_format -show_streams -of json fichero.mp4`.
 - Para actualizar el binario: `pip download yt-dlp --no-deps`, extraer el
   paquete `yt_dlp` del wheel, añadir un `__main__.py` que llame a
   `yt_dlp.main()` y empaquetar con
